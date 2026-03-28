@@ -389,3 +389,59 @@ func TestRefreshPodcastSkipPatterns(t *testing.T) {
 		t.Errorf("unskipped %d episodes, want 1", unskippedCount)
 	}
 }
+
+func TestRefreshPodcastDownloadAfter(t *testing.T) {
+	// Feed has 2 episodes:
+	//   "Episode 2: The Second" - pubDate Sat, 15 Mar 2025
+	//   "Episode 1: The Beginning" - pubDate Sat, 08 Mar 2025
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "date-filter-test"
+	dir := PodcastDir(dataDir, slug)
+	os.MkdirAll(dir, 0755)
+
+	// Only download episodes after March 10, 2025. Episode 1 (March 8) should be skipped.
+	cutoff := time.Date(2025, 3, 10, 0, 0, 0, 0, time.UTC)
+	meta := &PodcastMeta{
+		FeedURL:       srv.URL,
+		Title:         "Date Filter Test",
+		DownloadAfter: &cutoff,
+	}
+	SaveMeta(dir, meta)
+
+	added, err := RefreshPodcast(srv.Client(), dataDir, slug)
+	if err != nil {
+		t.Fatalf("RefreshPodcast: %v", err)
+	}
+	if added != 2 {
+		t.Errorf("added %d, want 2 (both added to index)", added)
+	}
+
+	idx, _ := LoadIndex(dir)
+	var skipped, pending int
+	for _, ep := range idx.Episodes {
+		if ep.Skipped {
+			skipped++
+			if ep.Title != "Episode 1: The Beginning" {
+				t.Errorf("expected 'Episode 1: The Beginning' to be skipped, got %q", ep.Title)
+			}
+		} else {
+			pending++
+		}
+	}
+	if skipped != 1 {
+		t.Errorf("skipped %d, want 1", skipped)
+	}
+	if pending != 1 {
+		t.Errorf("pending %d, want 1", pending)
+	}
+}

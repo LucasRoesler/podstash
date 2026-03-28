@@ -20,6 +20,12 @@ var templateFuncs = template.FuncMap{
 		}
 		return t.Format("2006-01-02 15:04")
 	},
+	"formatDateValue": func(t *time.Time) string {
+		if t == nil {
+			return ""
+		}
+		return t.Format("2006-01-02")
+	},
 	"truncate": func(s string, max int) string {
 		r := []rune(s)
 		if len(r) <= max {

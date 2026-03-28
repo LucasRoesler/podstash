@@ -239,8 +239,10 @@ func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error)
 			Description:   item.Description,
 		}
 
-		// Mark as skipped if title or description matches any skip pattern.
+		// Mark as skipped if filtered by pattern or date.
 		if MatchesSkipPattern(skipPatterns, item.Title, item.Description) {
+			ep.Skipped = true
+		} else if meta.DownloadAfter != nil && !ep.PubDate.IsZero() && ep.PubDate.Before(*meta.DownloadAfter) {
 			ep.Skipped = true
 		}
 

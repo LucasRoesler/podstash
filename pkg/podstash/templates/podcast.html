@@ -19,7 +19,21 @@
 </div>
 
 <details class="mb-4">
-  <summary>Skip Patterns ({{len .Meta.SkipPatterns}})</summary>
+  <summary>Filters</summary>
+
+  <h4>Download after</h4>
+  <p class="text-lighter">Only download episodes published after this date. Leave empty to download all.</p>
+  <form method="POST" action="/podcasts/{{.Meta.Slug}}/download-after">
+    <fieldset class="group">
+      <input type="date" name="date" value="{{formatDateValue .Meta.DownloadAfter}}">
+      <button type="submit">Set</button>
+      {{if .Meta.DownloadAfter}}
+      <button type="submit" name="clear" value="1" data-variant="secondary">Clear</button>
+      {{end}}
+    </fieldset>
+  </form>
+
+  <h4 class="mt-4">Skip patterns ({{len .Meta.SkipPatterns}})</h4>
   <p class="text-lighter">Episodes matching any pattern (regex, checked against title and description) are recorded but not downloaded.</p>
   {{if .Meta.SkipPatterns}}
   <ul>

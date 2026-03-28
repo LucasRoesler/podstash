@@ -91,11 +91,17 @@ Import subscriptions from another podcast app:
 
 Export subscriptions: `GET /opml` or click "Export OPML" in the nav bar.
 
-## Skip patterns
+## Filtering episodes
 
-Per-podcast regex filters to skip unwanted episodes. Matched against episode title and description. Useful for filtering rebroadcasts, "best of" compilations, or ad-only episodes.
+Both filters are managed per-podcast via the podcast detail page in the web UI.
 
-Manage via the podcast detail page in the web UI.
+### Download after (date filter)
+
+Only download episodes published after a given date. Older episodes are recorded in the index but not downloaded. Useful when subscribing to a large back-catalog podcast and you only want recent episodes.
+
+### Skip patterns (regex filter)
+
+Regex filters matched against episode title and description. Matching episodes are recorded but not downloaded. Useful for filtering rebroadcasts, "best of" compilations, or ad-only episodes.
 
 Example patterns:
 - `(?i)best\s+of` -- skip "Best Of" episodes (case-insensitive)

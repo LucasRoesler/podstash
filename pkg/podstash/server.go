@@ -53,6 +53,7 @@ func Run(cfg Config) {
 	mux.HandleFunc("POST /podcasts/{slug}/delete", app.handleDeletePodcast)
 	mux.HandleFunc("POST /podcasts/{slug}/refresh", app.handleRefreshPodcast)
 	mux.HandleFunc("POST /podcasts/{slug}/pause", app.handlePausePodcast)
+	mux.HandleFunc("POST /podcasts/{slug}/download-after", app.handleSetDownloadAfter)
 	mux.HandleFunc("POST /podcasts/{slug}/skip", app.handleAddSkipPattern)
 	mux.HandleFunc("POST /podcasts/{slug}/skip/delete", app.handleDeleteSkipPattern)
 	mux.HandleFunc("POST /opml", app.handleOPMLImport)

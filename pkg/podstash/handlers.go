@@ -263,6 +263,42 @@ func (app *App) handlePausePodcast(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, referer, http.StatusSeeOther)
 }
 
+func (app *App) handleSetDownloadAfter(w http.ResponseWriter, r *http.Request) {
+	slug, ok := slugParam(w, r)
+	if !ok {
+		return
+	}
+	dir := PodcastDir(app.DataDir, slug)
+
+	mu := podcastMu(slug)
+	mu.Lock()
+	defer mu.Unlock()
+
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	if r.FormValue("clear") != "" {
+		meta.DownloadAfter = nil
+	} else if dateStr := r.FormValue("date"); dateStr != "" {
+		t, err := time.Parse("2006-01-02", dateStr)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Invalid date: %v", err), http.StatusBadRequest)
+			return
+		}
+		meta.DownloadAfter = &t
+	}
+
+	if err := SaveMeta(dir, meta); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	http.Redirect(w, r, "/podcasts/"+slug, http.StatusSeeOther)
+}
+
 func (app *App) handleAddSkipPattern(w http.ResponseWriter, r *http.Request) {
 	slug, ok := slugParam(w, r)
 	if !ok {

@@ -39,6 +39,11 @@ type PodcastMeta struct {
 	// for download. Useful for filtering rebroadcasts, "best of" reruns, etc.
 	SkipPatterns []string `json:"skip_patterns,omitempty"`
 
+	// DownloadAfter filters episodes by publish date. Episodes published
+	// before this date are recorded in the index but not downloaded.
+	// Zero value means no date filter (download all).
+	DownloadAfter *time.Time `json:"download_after,omitempty"`
+
 	// Slug is the directory name, derived from Title. Not stored in JSON.
 	Slug string `json:"-"`
 }
