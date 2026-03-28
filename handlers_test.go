@@ -59,12 +59,8 @@ func TestHandleHome(t *testing.T) {
 	if !strings.Contains(body, "test-pod") {
 		t.Error("response should contain podcast name")
 	}
-	// Episode counts are rendered in table cells.
-	if !strings.Contains(body, ">2<") {
-		t.Errorf("response should show total episode count of 2")
-	}
-	if !strings.Contains(body, ">1<") {
-		t.Errorf("response should show downloaded episode count of 1")
+	if !strings.Contains(body, "1 / 2 episodes") {
+		t.Errorf("response should show episode counts, got: %s", body)
 	}
 }
 

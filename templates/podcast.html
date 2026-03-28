@@ -2,67 +2,74 @@
 
 {{define "content"}}
 <h1>{{.Meta.Title}}</h1>
-<p>
+<p class="text-light">
   {{if .Meta.Author}}<strong>{{.Meta.Author}}</strong> · {{end}}
   {{.TotalEpisodes}} episodes · {{.DownloadedEpisodes}} downloaded{{if .SkippedEpisodes}} · {{.SkippedEpisodes}} skipped{{end}}
-  {{if .Meta.Paused}} · <span class="badge warning">Paused</span>{{end}}
+  {{if .Meta.Paused}} · <span class="badge" data-variant="warning">Paused</span>{{end}}
 </p>
-{{if .Meta.Description}}<p>{{.Meta.Description}}</p>{{end}}
+{{if .Meta.Description}}<p class="text-lighter">{{truncate .Meta.Description 300}}</p>{{end}}
 
-<div style="margin-bottom: 1rem">
-  <form method="POST" action="/podcasts/{{.Meta.Slug}}/refresh" style="display:inline">
-    <button type="submit" class="secondary small">Refresh Feed</button>
+<div class="hstack gap-1 mt-4 mb-4">
+  <form method="POST" action="/podcasts/{{.Meta.Slug}}/refresh">
+    <button type="submit" data-variant="secondary" class="small">Refresh Feed</button>
   </form>
-  <form method="POST" action="/podcasts/{{.Meta.Slug}}/pause" style="display:inline">
-    <button type="submit" class="secondary small">{{if .Meta.Paused}}Unpause{{else}}Pause{{end}}</button>
+  <form method="POST" action="/podcasts/{{.Meta.Slug}}/pause">
+    <button type="submit" data-variant="secondary" class="small">{{if .Meta.Paused}}Unpause{{else}}Pause{{end}}</button>
   </form>
 </div>
 
-<details style="margin-bottom: 1rem">
+<details class="mb-4">
   <summary>Skip Patterns ({{len .Meta.SkipPatterns}})</summary>
-  <p>Episodes matching any pattern (regex, checked against title and description) will be recorded but not downloaded.</p>
+  <p class="text-lighter">Episodes matching any pattern (regex, checked against title and description) are recorded but not downloaded.</p>
   {{if .Meta.SkipPatterns}}
   <ul>
     {{range $i, $p := .Meta.SkipPatterns}}
-    <li>
+    <li class="hstack gap-2 items-center mb-2">
       <code>{{$p}}</code>
-      <form method="POST" action="/podcasts/{{$.Meta.Slug}}/skip/delete" style="display:inline">
+      <form method="POST" action="/podcasts/{{$.Meta.Slug}}/skip/delete">
         <input type="hidden" name="index" value="{{$i}}">
-        <button type="submit" class="danger small">Remove</button>
+        <button type="submit" data-variant="danger" class="small">Remove</button>
       </form>
     </li>
     {{end}}
   </ul>
   {{end}}
   <form method="POST" action="/podcasts/{{.Meta.Slug}}/skip">
-    <div style="display:flex; gap:0.5rem; align-items:end">
-      <input type="text" name="pattern" placeholder="(?i)best\s+of" required style="flex:1">
-      <button type="submit" class="small">Add Pattern</button>
-    </div>
+    <fieldset class="group">
+      <input type="text" name="pattern" placeholder="(?i)best\s+of" required>
+      <button type="submit">Add</button>
+    </fieldset>
   </form>
 </details>
 
 {{if .Episodes}}
-<table>
-  <thead>
-    <tr>
-      <th>Title</th>
-      <th>Published</th>
-      <th>Downloaded</th>
-      <th>Size</th>
-    </tr>
-  </thead>
-  <tbody>
-    {{range .Episodes}}
-    <tr>
-      <td>{{.Title}}</td>
-      <td>{{formatDate .PubDate}}</td>
-      <td>{{if .Skipped}}<span class="badge warning">Skipped</span>{{else if .Filename}}Yes{{else}}—{{end}}</td>
-      <td>{{if .FileSize}}{{formatSize .FileSize}}{{else}}—{{end}}</td>
-    </tr>
-    {{end}}
-  </tbody>
-</table>
+<div class="table">
+  <table>
+    <thead>
+      <tr>
+        <th>Title</th>
+        <th>Published</th>
+        <th>Status</th>
+        <th>Size</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Episodes}}
+      <tr>
+        <td>{{.Title}}</td>
+        <td>{{formatDate .PubDate}}</td>
+        <td>
+          {{- if .Skipped}}<span class="badge" data-variant="warning">Skipped</span>
+          {{- else if .Filename}}<span class="badge" data-variant="success">Downloaded</span>
+          {{- else}}<span class="badge">Pending</span>
+          {{- end}}
+        </td>
+        <td>{{if .FileSize}}{{formatSize .FileSize}}{{else}}—{{end}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
 {{else}}
 <p>No episodes yet. Try refreshing the feed.</p>
 {{end}}

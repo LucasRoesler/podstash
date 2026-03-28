@@ -3,22 +3,42 @@
 {{define "content"}}
 <h1>Add Podcast</h1>
 
-{{if .Error}}<p class="alert danger">{{.Error}}</p>{{end}}
-{{if .Success}}<p class="alert success">{{.Success}}</p>{{end}}
+{{if .Error}}
+<div role="alert" data-variant="error">
+  <div>{{.Error}}</div>
+</div>
+{{end}}
+{{if .Success}}
+<div role="alert" data-variant="success">
+  <div>{{.Success}}</div>
+</div>
+{{end}}
 
-<h2>Add by RSS URL</h2>
-<form method="POST" action="/podcasts">
-  <label for="url">Feed URL</label>
-  <input type="url" id="url" name="url" placeholder="https://example.com/feed.xml" required>
-  <button type="submit">Add Podcast</button>
-</form>
+<div class="row">
+  <div class="col col-6">
+    <div class="card">
+      <h2>Add by RSS URL</h2>
+      <form method="POST" action="/podcasts">
+        <fieldset data-field>
+          <label for="url">Feed URL</label>
+          <input type="url" id="url" name="url" placeholder="https://example.com/feed.xml" required>
+        </fieldset>
+        <button type="submit">Add Podcast</button>
+      </form>
+    </div>
+  </div>
 
-<hr>
-
-<h2>Import OPML</h2>
-<form method="POST" action="/opml" enctype="multipart/form-data">
-  <label for="opml">OPML File</label>
-  <input type="file" id="opml" name="opml" accept=".opml,.xml" required>
-  <button type="submit">Import</button>
-</form>
+  <div class="col col-6">
+    <div class="card">
+      <h2>Import OPML</h2>
+      <form method="POST" action="/opml" enctype="multipart/form-data">
+        <fieldset data-field>
+          <label for="opml">OPML File</label>
+          <input type="file" id="opml" name="opml" accept=".opml,.xml" required>
+        </fieldset>
+        <button type="submit">Import</button>
+      </form>
+    </div>
+  </div>
+</div>
 {{end}}
