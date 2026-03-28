@@ -52,6 +52,28 @@ func TestParseFeedSimple(t *testing.T) {
 	}
 }
 
+func TestParseFeedXML11(t *testing.T) {
+	data := []byte(`<?xml version="1.1" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>XML 1.1 Feed</title>
+    <item>
+      <title>Episode</title>
+      <guid>ep-1</guid>
+      <enclosure url="https://example.com/ep.mp3" type="audio/mpeg"/>
+    </item>
+  </channel>
+</rss>`)
+
+	feed, err := ParseFeed(data)
+	if err != nil {
+		t.Fatalf("ParseFeed with XML 1.1: %v", err)
+	}
+	if feed.Channel.Title != "XML 1.1 Feed" {
+		t.Errorf("Title = %q", feed.Channel.Title)
+	}
+}
+
 func TestParseFeedITunes(t *testing.T) {
 	data, err := os.ReadFile("testdata/feed_itunes.xml")
 	if err != nil {

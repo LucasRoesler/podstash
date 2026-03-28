@@ -62,6 +62,23 @@ func TestParseOPMLNested(t *testing.T) {
 	}
 }
 
+func TestParseOPMLXML11(t *testing.T) {
+	opml := `<?xml version="1.1" encoding="UTF-8"?>
+<opml version="2.0">
+  <body>
+    <outline type="rss" text="Test" xmlUrl="https://example.com/feed"/>
+  </body>
+</opml>`
+
+	urls, err := ParseOPML(strings.NewReader(opml))
+	if err != nil {
+		t.Fatalf("ParseOPML with XML 1.1: %v", err)
+	}
+	if len(urls) != 1 {
+		t.Fatalf("got %d URLs, want 1", len(urls))
+	}
+}
+
 func TestExportOPML(t *testing.T) {
 	podcasts := []PodcastMeta{
 		{Title: "Podcast A", FeedURL: "https://example.com/a"},

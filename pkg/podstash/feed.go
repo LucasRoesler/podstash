@@ -5,9 +5,19 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
+
+// xmlDeclRe matches XML declarations with version > 1.0.
+// Go's encoding/xml only supports version="1.0".
+var xmlDeclRe = regexp.MustCompile(`<\?xml\s+version="1\.[1-9]"`)
+
+// sanitizeXML rewrites XML 1.1+ declarations to 1.0 so encoding/xml can parse them.
+func sanitizeXML(data []byte) []byte {
+	return xmlDeclRe.ReplaceAll(data, []byte(`<?xml version="1.0"`))
+}
 
 // HTTPClient abstracts HTTP fetching for testability.
 type HTTPClient interface {
@@ -107,6 +117,7 @@ type RSSEnclosure struct {
 
 // ParseFeed parses RSS XML bytes into an RSSFeed.
 func ParseFeed(data []byte) (*RSSFeed, error) {
+	data = sanitizeXML(data)
 	var feed RSSFeed
 	if err := xml.Unmarshal(data, &feed); err != nil {
 		return nil, fmt.Errorf("parse feed: %w", err)

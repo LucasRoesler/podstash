@@ -39,6 +39,7 @@ func ParseOPML(r io.Reader) ([]string, error) {
 		return nil, fmt.Errorf("read opml: %w", err)
 	}
 
+	data = sanitizeXML(data)
 	var opml OPML
 	if err := xml.Unmarshal(data, &opml); err != nil {
 		return nil, fmt.Errorf("parse opml: %w", err)
