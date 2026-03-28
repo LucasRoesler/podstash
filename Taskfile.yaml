@@ -58,7 +58,7 @@ tasks:
     deps: [docker:build]
     cmds:
       - mkdir -p ./temp/data/podcasts
-      - docker run --rm -p 8080:8080 -v {{.PWD}}/temp/data:/data {{.IMAGE}}:latest
+      - docker run --rm -p 8080:8080 -u "$(id -u):$(id -g)" -v {{.PWD}}/temp/data:/data {{.IMAGE}}:latest
     vars:
       PWD:
         sh: pwd
