@@ -19,7 +19,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install Task
-        uses: go-task/setup-task@v1
+        uses: go-task/setup-task@v2
       - run: task lint
         name: Lint
       - run: task test
