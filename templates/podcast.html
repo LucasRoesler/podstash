@@ -1,0 +1,69 @@
+{{define "title"}}{{.Meta.Title}} — podstash{{end}}
+
+{{define "content"}}
+<h1>{{.Meta.Title}}</h1>
+<p>
+  {{if .Meta.Author}}<strong>{{.Meta.Author}}</strong> · {{end}}
+  {{.TotalEpisodes}} episodes · {{.DownloadedEpisodes}} downloaded{{if .SkippedEpisodes}} · {{.SkippedEpisodes}} skipped{{end}}
+  {{if .Meta.Paused}} · <span class="badge warning">Paused</span>{{end}}
+</p>
+{{if .Meta.Description}}<p>{{.Meta.Description}}</p>{{end}}
+
+<div style="margin-bottom: 1rem">
+  <form method="POST" action="/podcasts/{{.Meta.Slug}}/refresh" style="display:inline">
+    <button type="submit" class="secondary small">Refresh Feed</button>
+  </form>
+  <form method="POST" action="/podcasts/{{.Meta.Slug}}/pause" style="display:inline">
+    <button type="submit" class="secondary small">{{if .Meta.Paused}}Unpause{{else}}Pause{{end}}</button>
+  </form>
+</div>
+
+<details style="margin-bottom: 1rem">
+  <summary>Skip Patterns ({{len .Meta.SkipPatterns}})</summary>
+  <p>Episodes matching any pattern (regex, checked against title and description) will be recorded but not downloaded.</p>
+  {{if .Meta.SkipPatterns}}
+  <ul>
+    {{range $i, $p := .Meta.SkipPatterns}}
+    <li>
+      <code>{{$p}}</code>
+      <form method="POST" action="/podcasts/{{$.Meta.Slug}}/skip/delete" style="display:inline">
+        <input type="hidden" name="index" value="{{$i}}">
+        <button type="submit" class="danger small">Remove</button>
+      </form>
+    </li>
+    {{end}}
+  </ul>
+  {{end}}
+  <form method="POST" action="/podcasts/{{.Meta.Slug}}/skip">
+    <div style="display:flex; gap:0.5rem; align-items:end">
+      <input type="text" name="pattern" placeholder="(?i)best\s+of" required style="flex:1">
+      <button type="submit" class="small">Add Pattern</button>
+    </div>
+  </form>
+</details>
+
+{{if .Episodes}}
+<table>
+  <thead>
+    <tr>
+      <th>Title</th>
+      <th>Published</th>
+      <th>Downloaded</th>
+      <th>Size</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Episodes}}
+    <tr>
+      <td>{{.Title}}</td>
+      <td>{{formatDate .PubDate}}</td>
+      <td>{{if .Skipped}}<span class="badge warning">Skipped</span>{{else if .Filename}}Yes{{else}}—{{end}}</td>
+      <td>{{if .FileSize}}{{formatSize .FileSize}}{{else}}—{{end}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>No episodes yet. Try refreshing the feed.</p>
+{{end}}
+{{end}}

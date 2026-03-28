@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Date Format Podcast</title>
+    <link>https://example.com</link>
+    <description>Podcast with varied date formats.</description>
+    <item>
+      <title>RFC1123Z Date</title>
+      <enclosure url="https://example.com/ep1.mp3" length="1000" type="audio/mpeg"/>
+      <guid>date-001</guid>
+      <pubDate>Mon, 03 Mar 2025 14:30:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>RFC1123 Date</title>
+      <enclosure url="https://example.com/ep2.mp3" length="1000" type="audio/mpeg"/>
+      <guid>date-002</guid>
+      <pubDate>Mon, 03 Mar 2025 14:30:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>RFC3339 Date</title>
+      <enclosure url="https://example.com/ep3.mp3" length="1000" type="audio/mpeg"/>
+      <guid>date-003</guid>
+      <pubDate>2025-03-03T14:30:00Z</pubDate>
+    </item>
+    <item>
+      <title>Single Digit Day</title>
+      <enclosure url="https://example.com/ep4.mp3" length="1000" type="audio/mpeg"/>
+      <guid>date-004</guid>
+      <pubDate>Mon, 3 Mar 2025 14:30:00 +0000</pubDate>
+    </item>
+    <item>
+      <title>No Date</title>
+      <enclosure url="https://example.com/ep5.mp3" length="1000" type="audio/mpeg"/>
+      <guid>date-005</guid>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>iTunes Podcast</title>
+    <link>https://example.com</link>
+    <description>A podcast with iTunes extensions.</description>
+    <language>de</language>
+    <itunes:author>Podcast Author</itunes:author>
+    <itunes:image href="https://example.com/itunes-cover.jpg"/>
+    <itunes:explicit>false</itunes:explicit>
+    <itunes:category text="Technology"/>
+    <item>
+      <title>Special Episode</title>
+      <description>Episode with iTunes metadata.</description>
+      <enclosure url="https://example.com/special.mp3" length="8000000" type="audio/mpeg"/>
+      <guid isPermaLink="false">itunes-ep-001</guid>
+      <pubDate>Mon, 10 Mar 2025 08:00:00 +0000</pubDate>
+      <itunes:duration>01:23:45</itunes:duration>
+      <itunes:image href="https://example.com/ep-cover.jpg"/>
+      <itunes:explicit>false</itunes:explicit>
+    </item>
+    <item>
+      <title>Bonus Episode</title>
+      <description>A bonus episode.</description>
+      <enclosure url="https://example.com/bonus.m4a" length="4000000" type="audio/x-m4a"/>
+      <guid isPermaLink="false">itunes-ep-002</guid>
+      <pubDate>Wed, 12 Mar 2025 12:00:00 +0000</pubDate>
+      <itunes:duration>45:30</itunes:duration>
+    </item>
+  </channel>
+</rss>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<opml version="2.0">
+  <head>
+    <title>Podcast Subscriptions</title>
+  </head>
+  <body>
+    <outline text="Podcasts">
+      <outline type="rss" text="The Daily" xmlUrl="https://example.com/the-daily/feed.xml" htmlUrl="https://example.com/the-daily"/>
+      <outline type="rss" text="Hardcore History" xmlUrl="https://example.com/hardcore-history/feed.xml"/>
+    </outline>
+    <outline type="rss" text="Top Level Feed" xmlUrl="https://example.com/top-level/feed.xml"/>
+  </body>
+</opml>

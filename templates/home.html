@@ -1,0 +1,45 @@
+{{define "title"}}podstash{{end}}
+
+{{define "content"}}
+<h1>Podcasts</h1>
+
+{{if .Podcasts}}
+<table>
+  <thead>
+    <tr>
+      <th>Podcast</th>
+      <th>Episodes</th>
+      <th>Downloaded</th>
+      <th>Last Checked</th>
+      <th>Status</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Podcasts}}
+    <tr>
+      <td><a href="/podcasts/{{.Meta.Slug}}">{{.Meta.Title}}</a></td>
+      <td>{{.TotalEpisodes}}</td>
+      <td>{{.DownloadedEpisodes}}</td>
+      <td>{{formatTime .Meta.LastCheckedAt}}</td>
+      <td>{{if .Meta.Paused}}<span class="badge warning">Paused</span>{{else}}<span class="badge success">Active</span>{{end}}</td>
+      <td>
+        <form method="POST" action="/podcasts/{{.Meta.Slug}}/refresh" style="display:inline">
+          <button type="submit" class="secondary small">Refresh</button>
+        </form>
+        <form method="POST" action="/podcasts/{{.Meta.Slug}}/pause" style="display:inline">
+          <button type="submit" class="secondary small">{{if .Meta.Paused}}Unpause{{else}}Pause{{end}}</button>
+        </form>
+        <form method="POST" action="/podcasts/{{.Meta.Slug}}/delete" style="display:inline"
+              onsubmit="return confirm('Delete {{.Meta.Title}} and all episodes?')">
+          <button type="submit" class="danger small">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>No podcasts yet. <a href="/add">Add one</a> or <a href="/add">import OPML</a>.</p>
+{{end}}
+{{end}}
