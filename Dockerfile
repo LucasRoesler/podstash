@@ -1,5 +1,5 @@
 # Builder runs on the host platform; Go cross-compiles for the target.
-# No QEMU needed for the Go build itself.
+# No QEMU needed anywhere — the runtime image is scratch (no package manager).
 FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
 ARG TARGETOS TARGETARCH
 WORKDIR /src
@@ -8,11 +8,11 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /podstash .
 
-FROM alpine:3.21
-RUN apk add --no-cache ca-certificates \
-    && addgroup -S podstash && adduser -S podstash -G podstash
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /etc/passwd /etc/passwd
 COPY --from=builder /podstash /podstash
-USER podstash
+USER nobody
 ENV DATA_DIR=/data
 ENV POLL_INTERVAL=60m
 EXPOSE 8080
