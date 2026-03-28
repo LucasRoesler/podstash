@@ -58,6 +58,7 @@ func Run(cfg Config) {
 	mux.HandleFunc("POST /podcasts/{slug}/skip/delete", app.handleDeleteSkipPattern)
 	mux.HandleFunc("POST /opml", app.handleOPMLImport)
 	mux.HandleFunc("GET /opml", app.handleOPMLExport)
+	mux.HandleFunc("GET /healthz", app.handleHealthz)
 
 	// Start poller.
 	go startPoller(app, cfg.PollInterval)

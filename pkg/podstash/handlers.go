@@ -445,6 +445,27 @@ func (app *App) handleOPMLExport(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
+func (app *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	dir := filepath.Join(app.DataDir, podcastsDir)
+
+	// Verify read access.
+	if _, err := os.Stat(dir); err != nil {
+		http.Error(w, fmt.Sprintf("data dir not readable: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+
+	// Verify write access.
+	probe := filepath.Join(dir, ".healthcheck")
+	if err := os.WriteFile(probe, nil, 0644); err != nil {
+		http.Error(w, fmt.Sprintf("data dir not writable: %v", err), http.StatusServiceUnavailable)
+		return
+	}
+	os.Remove(probe)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok"}` + "\n"))
+}
+
 func (app *App) render(w http.ResponseWriter, name string, data any) {
 	t, ok := app.Tmpl[name]
 	if !ok {
