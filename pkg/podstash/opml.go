@@ -1,4 +1,4 @@
-package main
+package podstash
 
 import (
 	"encoding/xml"
@@ -9,9 +9,9 @@ import (
 // OPML XML structures
 
 type OPML struct {
-	XMLName xml.Name    `xml:"opml"`
-	Head    OPMLHead    `xml:"head"`
-	Body    OPMLBody    `xml:"body"`
+	XMLName xml.Name `xml:"opml"`
+	Head    OPMLHead `xml:"head"`
+	Body    OPMLBody `xml:"body"`
 }
 
 type OPMLHead struct {

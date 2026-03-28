@@ -1,4 +1,4 @@
-package main
+package podstash
 
 import (
 	"fmt"
@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// config holds application configuration from environment variables.
-// All configuration is read once at startup via loadConfig().
-type config struct {
+// Config holds application configuration from environment variables.
+// All configuration is read once at startup via LoadConfig().
+type Config struct {
 	DataDir         string
 	Port            string
 	PollInterval    time.Duration
@@ -19,8 +19,9 @@ type config struct {
 	HTTPTimeout     time.Duration
 }
 
-func loadConfig() config {
-	cfg := config{
+// LoadConfig reads configuration from environment variables.
+func LoadConfig() Config {
+	cfg := Config{
 		DataDir:         envOr("DATA_DIR", "/data"),
 		Port:            envOr("PORT", "8080"),
 		PollInterval:    60 * time.Minute,
@@ -71,8 +72,8 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// initLogger sets up slog with the configured format.
-func initLogger(format string) {
+// InitLogger sets up slog with the configured format.
+func InitLogger(format string) {
 	var handler slog.Handler
 	switch format {
 	case "json":

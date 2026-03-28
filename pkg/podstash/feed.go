@@ -1,4 +1,4 @@
-package main
+package podstash
 
 import (
 	"encoding/xml"
@@ -158,13 +158,13 @@ func ParsePubDate(s string) time.Time {
 	}
 
 	formats := []string{
-		time.RFC1123Z,                        // Mon, 02 Jan 2006 15:04:05 -0700
-		time.RFC1123,                         // Mon, 02 Jan 2006 15:04:05 MST
-		"Mon, 2 Jan 2006 15:04:05 -0700",    // single-digit day
-		"Mon, 2 Jan 2006 15:04:05 MST",      // single-digit day, named tz
-		time.RFC3339,                         // 2006-01-02T15:04:05Z07:00
-		"2006-01-02T15:04:05Z",              // RFC3339 without offset
-		"2006-01-02 15:04:05",               // common alternative
+		time.RFC1123Z,                           // Mon, 02 Jan 2006 15:04:05 -0700
+		time.RFC1123,                            // Mon, 02 Jan 2006 15:04:05 MST
+		"Mon, 2 Jan 2006 15:04:05 -0700",        // single-digit day
+		"Mon, 2 Jan 2006 15:04:05 MST",          // single-digit day, named tz
+		time.RFC3339,                            // 2006-01-02T15:04:05Z07:00
+		"2006-01-02T15:04:05Z",                  // RFC3339 without offset
+		"2006-01-02 15:04:05",                   // common alternative
 		"Mon, 02 Jan 2006 15:04:05 +0000 (UTC)", // some feeds append timezone name
 	}
 

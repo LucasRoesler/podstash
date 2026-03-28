@@ -1,4 +1,4 @@
-package main
+package podstash
 
 import (
 	"encoding/json"
@@ -17,8 +17,8 @@ import (
 const (
 	metaFilename  = ".podstash.meta.json"
 	indexFilename = ".podstash.index.json"
-	podcastsDir = "podcasts"
-	maxSlugLen  = 80
+	podcastsDir   = "podcasts"
+	maxSlugLen    = 80
 )
 
 var multiHyphenRe = regexp.MustCompile(`-{2,}`)

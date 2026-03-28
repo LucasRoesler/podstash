@@ -1,0 +1,77 @@
+version: "3"
+
+vars:
+  BINARY: podstash
+  IMAGE: ghcr.io/lucasroesler/podstash
+  VERSION:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo "dev"
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list-all
+
+  fmt:
+    desc: Format Go source files
+    cmds:
+      - gofmt -s -w .
+
+  lint:
+    desc: Run linters
+    cmds:
+      - go vet ./...
+      - gofmt -l . | grep . && echo "Files need formatting (run 'task fmt')" && exit 1 || true
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test -count=1 ./...
+
+  test:verbose:
+    desc: Run all tests with verbose output
+    cmds:
+      - go test -v -count=1 ./...
+
+  build:
+    desc: Build the binary
+    cmds:
+      - go build -o {{.BINARY}} .
+
+  run:
+    desc: Run the server locally
+    env:
+      DATA_DIR: ./temp/data
+      PORT: "8080"
+      POLL_INTERVAL: 5m
+    cmds:
+      - mkdir -p ./temp/data/podcasts
+      - go run .
+
+  docker:build:
+    desc: Build the Docker image
+    cmds:
+      - docker build -t {{.IMAGE}}:{{.VERSION}} -t {{.IMAGE}}:latest .
+
+  docker:run:
+    desc: Run the Docker image locally
+    deps: [docker:build]
+    cmds:
+      - mkdir -p ./temp/data/podcasts
+      - docker run --rm -p 8080:8080 -v {{.PWD}}/temp/data:/data {{.IMAGE}}:latest
+    vars:
+      PWD:
+        sh: pwd
+
+  clean:
+    desc: Remove build artifacts
+    cmds:
+      - rm -f {{.BINARY}}
+      - rm -rf temp/data
+
+  check:
+    desc: Run fmt, lint, and test
+    cmds:
+      - task: fmt
+      - task: lint
+      - task: test

@@ -1,4 +1,4 @@
-package main
+package podstash
 
 import (
 	"net/http"
@@ -44,7 +44,7 @@ func TestFileExtFromURL(t *testing.T) {
 		{"https://example.com/episode.ogg", ".ogg"},
 		{"https://example.com/episode.mp3?token=abc", ".mp3"},
 		{"https://example.com/episode", ".mp3"}, // fallback
-		{"", ".mp3"},                              // fallback
+		{"", ".mp3"},                            // fallback
 	}
 
 	for _, tt := range tests {
