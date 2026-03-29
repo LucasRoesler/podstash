@@ -1,6 +1,7 @@
 package podstash
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
 	"os"
@@ -22,10 +23,10 @@ type Config struct {
 // LoadConfig reads configuration from environment variables.
 func LoadConfig() Config {
 	cfg := Config{
-		DataDir:         envOr("DATA_DIR", "/data"),
-		Port:            envOr("PORT", "8080"),
+		DataDir:         cmp.Or(os.Getenv("DATA_DIR"), "/data"),
+		Port:            cmp.Or(os.Getenv("PORT"), "8080"),
 		PollInterval:    60 * time.Minute,
-		LogFormat:       envOr("LOG_FORMAT", "text"),
+		LogFormat:       cmp.Or(os.Getenv("LOG_FORMAT"), "text"),
 		DownloadWorkers: 2,
 		HTTPTimeout:     2 * time.Minute,
 	}
@@ -63,13 +64,6 @@ func parseInt(name, s string) int {
 		os.Exit(1)
 	}
 	return v
-}
-
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }
 
 // InitLogger sets up slog with the configured format.
