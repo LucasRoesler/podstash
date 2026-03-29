@@ -181,13 +181,11 @@ func DownloadPending(client HTTPClient, dataDir string, workers int) error {
 		if p.Paused {
 			continue
 		}
-		wg.Add(1)
-		go func(slug string) {
-			defer wg.Done()
+		wg.Go(func() {
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			downloadPodcastEpisodes(client, PodcastDir(dataDir, slug), slug)
-		}(p.Slug)
+			downloadPodcastEpisodes(client, PodcastDir(dataDir, p.Slug), p.Slug)
+		})
 	}
 
 	wg.Wait()
