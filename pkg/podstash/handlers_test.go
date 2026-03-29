@@ -369,3 +369,173 @@ func TestHandleOPMLExport(t *testing.T) {
 		t.Error("OPML should contain podcast feed URL")
 	}
 }
+
+func TestSlugParamRejectsTraversal(t *testing.T) {
+	app, _ := testApp(t)
+
+	maliciousSlugs := []string{"../etc", "..", ".", "foo/bar", "foo\\bar"}
+	for _, slug := range maliciousSlugs {
+		t.Run(slug, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/podcasts/"+slug, nil)
+			req.SetPathValue("slug", slug)
+			w := httptest.NewRecorder()
+			app.handlePodcast(w, req)
+
+			if w.Code != http.StatusNotFound {
+				t.Errorf("handlePodcast(%q): status = %d, want 404", slug, w.Code)
+			}
+		})
+	}
+
+	// Also verify delete handler rejects traversal.
+	for _, slug := range maliciousSlugs {
+		t.Run("delete/"+slug, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/podcasts/"+slug+"/delete", nil)
+			req.SetPathValue("slug", slug)
+			w := httptest.NewRecorder()
+			app.handleDeletePodcast(w, req)
+
+			if w.Code != http.StatusNotFound {
+				t.Errorf("handleDeletePodcast(%q): status = %d, want 404", slug, w.Code)
+			}
+		})
+	}
+}
+
+func TestHandleRefreshPodcast(t *testing.T) {
+	feedXML, _ := os.ReadFile("testdata/feed_simple.xml")
+	feedSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(feedXML)
+	}))
+	defer feedSrv.Close()
+
+	app, dataDir := testApp(t)
+	app.Client = feedSrv.Client()
+	seedPodcast(t, dataDir, "refresh-me")
+
+	// Update the feed URL to point to our test server.
+	dir := PodcastDir(dataDir, "refresh-me")
+	meta, _ := LoadMeta(dir)
+	meta.FeedURL = feedSrv.URL
+	SaveMeta(dir, meta)
+
+	req := httptest.NewRequest("POST", "/podcasts/refresh-me/refresh", nil)
+	req.SetPathValue("slug", "refresh-me")
+	req.Header.Set("Referer", "/podcasts/refresh-me")
+	w := httptest.NewRecorder()
+	app.handleRefreshPodcast(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/podcasts/refresh-me" {
+		t.Errorf("Location = %q, want %q", loc, "/podcasts/refresh-me")
+	}
+}
+
+func TestHandleRefreshPodcastNotFound(t *testing.T) {
+	app, _ := testApp(t)
+
+	req := httptest.NewRequest("POST", "/podcasts/nonexistent/refresh", nil)
+	req.SetPathValue("slug", "nonexistent")
+	w := httptest.NewRecorder()
+	app.handleRefreshPodcast(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestHandleSetDownloadAfter(t *testing.T) {
+	app, dataDir := testApp(t)
+	seedPodcast(t, dataDir, "date-pod")
+
+	// Set a download-after date.
+	form := url.Values{"date": {"2025-06-01"}}
+	req := httptest.NewRequest("POST", "/podcasts/date-pod/download-after", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("slug", "date-pod")
+	w := httptest.NewRecorder()
+	app.handleSetDownloadAfter(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", w.Code)
+	}
+
+	dir := PodcastDir(dataDir, "date-pod")
+	meta, _ := LoadMeta(dir)
+	if meta.DownloadAfter == nil {
+		t.Fatal("DownloadAfter should be set")
+	}
+	want := time.Date(2025, 6, 1, 0, 0, 0, 0, time.UTC)
+	if !meta.DownloadAfter.Equal(want) {
+		t.Errorf("DownloadAfter = %v, want %v", meta.DownloadAfter, want)
+	}
+
+	// Clear the date.
+	form = url.Values{"clear": {"1"}}
+	req = httptest.NewRequest("POST", "/podcasts/date-pod/download-after", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("slug", "date-pod")
+	w = httptest.NewRecorder()
+	app.handleSetDownloadAfter(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("clear: status = %d, want 303", w.Code)
+	}
+
+	meta, _ = LoadMeta(dir)
+	if meta.DownloadAfter != nil {
+		t.Errorf("DownloadAfter should be nil after clear, got %v", meta.DownloadAfter)
+	}
+}
+
+func TestHandleSetDownloadAfterInvalidDate(t *testing.T) {
+	app, dataDir := testApp(t)
+	seedPodcast(t, dataDir, "bad-date")
+
+	form := url.Values{"date": {"not-a-date"}}
+	req := httptest.NewRequest("POST", "/podcasts/bad-date/download-after", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetPathValue("slug", "bad-date")
+	w := httptest.NewRecorder()
+	app.handleSetDownloadAfter(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestHandleHealthz(t *testing.T) {
+	app, _ := testApp(t)
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	app.handleHealthz(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"status":"ok"`) {
+		t.Errorf("unexpected body: %s", body)
+	}
+}
+
+func TestHandleHealthzMissingDir(t *testing.T) {
+	app := &App{
+		DataDir: "/nonexistent/path/that/does/not/exist",
+		Tmpl:    loadTemplates(),
+	}
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	app.handleHealthz(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
+	}
+}
