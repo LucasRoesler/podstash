@@ -227,6 +227,12 @@ func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error)
 	// Compile skip patterns once for this refresh cycle.
 	skipPatterns := CompileSkipPatterns(meta.SkipPatterns)
 
+	// Build GUID set for O(1) lookups.
+	knownGUIDs := make(map[string]struct{}, len(idx.Episodes))
+	for _, ep := range idx.Episodes {
+		knownGUIDs[ep.GUID] = struct{}{}
+	}
+
 	// Add new episodes.
 	added := 0
 	for _, item := range feed.Channel.Items {
@@ -237,7 +243,7 @@ func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error)
 		if guid == "" {
 			continue
 		}
-		if idx.HasGUID(guid) {
+		if _, exists := knownGUIDs[guid]; exists {
 			continue
 		}
 
@@ -258,6 +264,7 @@ func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error)
 		}
 
 		idx.Episodes = append(idx.Episodes, ep)
+		knownGUIDs[guid] = struct{}{}
 		added++
 	}
 
