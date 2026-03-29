@@ -3,6 +3,7 @@ package podstash
 import (
 	"context"
 	"embed"
+	"errors"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -40,6 +41,7 @@ func Run(cfg Config) {
 	mux := http.NewServeMux()
 
 	// Static files.
+	// Ignore error — path is a compile-time constant embedded via go:embed.
 	staticSub, _ := fs.Sub(staticFiles, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
@@ -78,7 +80,7 @@ func Run(cfg Config) {
 	}()
 
 	slog.Info("listening", "addr", addr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server failed", "error", err)
 		os.Exit(1)
 	}
