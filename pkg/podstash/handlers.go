@@ -151,7 +151,10 @@ func (app *App) handleAddPodcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	os.MkdirAll(dir, 0755)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		app.render(w, "add.html", AddData{Error: fmt.Sprintf("Failed to create directory: %v", err)})
+		return
+	}
 
 	meta := &PodcastMeta{
 		FeedURL:     feedURL,
@@ -167,7 +170,10 @@ func (app *App) handleAddPodcast(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Save initial empty index and refresh immediately.
-	SaveIndex(dir, &EpisodeIndex{})
+	if err := SaveIndex(dir, &EpisodeIndex{}); err != nil {
+		app.render(w, "add.html", AddData{Error: fmt.Sprintf("Failed to save index: %v", err)})
+		return
+	}
 
 	added, err := RefreshPodcast(app.Client, app.DataDir, slug)
 	if err != nil {
@@ -416,7 +422,10 @@ func (app *App) handleOPMLImport(w http.ResponseWriter, r *http.Request) {
 			slog.Error("opml import: save failed", "podcast", slug, "error", err)
 			continue
 		}
-		SaveIndex(dir, &EpisodeIndex{})
+		if err := SaveIndex(dir, &EpisodeIndex{}); err != nil {
+			slog.Error("opml import: save index failed", "podcast", slug, "error", err)
+			continue
+		}
 		added++
 		slog.Info("opml import: added", "podcast", slug)
 	}
@@ -442,7 +451,8 @@ func (app *App) handleOPMLExport(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/xml")
 	w.Header().Set("Content-Disposition", "attachment; filename=podstash.opml")
-	w.Write(data)
+	// Ignore error — response already committed, nothing useful to do on write failure.
+	_, _ = w.Write(data)
 }
 
 func (app *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -463,7 +473,8 @@ func (app *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	os.Remove(probe)
 
 	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status":"ok"}` + "\n"))
+	// Ignore error — response already committed, nothing useful to do on write failure.
+	_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
 }
 
 func (app *App) render(w http.ResponseWriter, name string, data any) {
