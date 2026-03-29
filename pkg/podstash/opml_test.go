@@ -104,12 +104,18 @@ func TestExportOPML(t *testing.T) {
 		t.Error("missing podcast title A")
 	}
 
-	// Verify it round-trips.
+	// Verify it round-trips with correct URL values.
 	urls, err := ParseOPML(strings.NewReader(s))
 	if err != nil {
 		t.Fatalf("round-trip ParseOPML: %v", err)
 	}
 	if len(urls) != 2 {
-		t.Errorf("round-trip got %d URLs, want 2", len(urls))
+		t.Fatalf("round-trip got %d URLs, want 2", len(urls))
+	}
+	wantURLs := []string{"https://example.com/a", "https://example.com/b"}
+	for i, want := range wantURLs {
+		if urls[i] != want {
+			t.Errorf("urls[%d] = %q, want %q", i, urls[i], want)
+		}
 	}
 }

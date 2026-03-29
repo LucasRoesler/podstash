@@ -155,8 +155,12 @@ func TestHandleAddPodcast(t *testing.T) {
 		t.Fatalf("status = %d, want 303", w.Code)
 	}
 
-	// Verify podcast was created on disk.
 	slug := Slugify("Test Podcast")
+	if loc := w.Header().Get("Location"); loc != "/podcasts/"+slug {
+		t.Errorf("Location = %q, want %q", loc, "/podcasts/"+slug)
+	}
+
+	// Verify podcast was created on disk.
 	dir := PodcastDir(dataDir, slug)
 	meta, err := LoadMeta(dir)
 	if err != nil {
@@ -179,6 +183,9 @@ func TestHandleDeletePodcast(t *testing.T) {
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", w.Code)
 	}
+	if loc := w.Header().Get("Location"); loc != "/" {
+		t.Errorf("Location = %q, want %q", loc, "/")
+	}
 
 	dir := PodcastDir(dataDir, "to-delete")
 	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
@@ -198,6 +205,9 @@ func TestHandlePausePodcast(t *testing.T) {
 
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/" {
+		t.Errorf("Location = %q, want %q", loc, "/")
 	}
 
 	dir := PodcastDir(dataDir, "to-pause")
@@ -231,6 +241,9 @@ func TestHandleAddSkipPattern(t *testing.T) {
 
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/podcasts/skip-pod" {
+		t.Errorf("Location = %q, want %q", loc, "/podcasts/skip-pod")
 	}
 
 	dir := PodcastDir(dataDir, "skip-pod")
@@ -279,6 +292,9 @@ func TestHandleDeleteSkipPattern(t *testing.T) {
 
 	if w.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303", w.Code)
+	}
+	if loc := w.Header().Get("Location"); loc != "/podcasts/skip-del" {
+		t.Errorf("Location = %q, want %q", loc, "/podcasts/skip-del")
 	}
 
 	updated, _ := LoadMeta(dir)

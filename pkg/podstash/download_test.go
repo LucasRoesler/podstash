@@ -105,8 +105,9 @@ func TestDownloadEpisode(t *testing.T) {
 		t.Fatalf("DownloadEpisode: %v", err)
 	}
 
-	if ep.Filename == "" {
-		t.Fatal("Filename should be set after download")
+	wantFilename := "2025-03-15-test-episode.mp3"
+	if ep.Filename != wantFilename {
+		t.Fatalf("Filename = %q, want %q", ep.Filename, wantFilename)
 	}
 	if ep.FileSize != int64(len(content)) {
 		t.Errorf("FileSize = %d, want %d", ep.FileSize, len(content))
@@ -190,7 +191,9 @@ func TestDownloadEpisodeAdoptsExistingFile(t *testing.T) {
 
 func TestDownloadCoverImage(t *testing.T) {
 	content := []byte("fake image data")
+	requestCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
 		w.Header().Set("Content-Type", "image/jpeg")
 		w.Write(content)
 	}))
@@ -201,6 +204,9 @@ func TestDownloadCoverImage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DownloadCoverImage: %v", err)
 	}
+	if requestCount != 1 {
+		t.Fatalf("expected 1 request, got %d", requestCount)
+	}
 
 	data, err := os.ReadFile(filepath.Join(dir, coverFilename))
 	if err != nil {
@@ -210,10 +216,13 @@ func TestDownloadCoverImage(t *testing.T) {
 		t.Error("cover content mismatch")
 	}
 
-	// Calling again should skip (file exists).
+	// Calling again should skip (file exists) without contacting the server.
 	err = DownloadCoverImage(srv.Client(), dir, srv.URL+"/cover.jpg")
 	if err != nil {
 		t.Fatalf("second DownloadCoverImage: %v", err)
+	}
+	if requestCount != 1 {
+		t.Errorf("expected no additional requests, got %d total", requestCount)
 	}
 }
 

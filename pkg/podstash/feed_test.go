@@ -340,7 +340,9 @@ func TestRefreshPodcastUpdatesFromFeed(t *testing.T) {
 	meta := &PodcastMeta{FeedURL: srv.URL, Title: "Old Title"}
 	SaveMeta(dir, meta)
 
-	RefreshPodcast(srv.Client(), dataDir, slug)
+	if _, err = RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("RefreshPodcast: %v", err)
+	}
 
 	updated, _ := LoadMeta(dir)
 	if updated.Title != "iTunes Podcast" {
