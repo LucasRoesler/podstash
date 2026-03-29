@@ -3,10 +3,12 @@ package podstash
 import (
 	"errors"
 	"io/fs"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -339,5 +341,71 @@ func TestDownloadPendingSkipsPaused(t *testing.T) {
 	}
 	if requestCount != 0 {
 		t.Errorf("expected 0 HTTP requests for paused podcast, got %d", requestCount)
+	}
+}
+
+func TestDownloadEpisodeHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	ep := &EpisodeEntry{
+		GUID:         "err-001",
+		Title:        "Error Episode",
+		EnclosureURL: srv.URL + "/ep.mp3",
+	}
+
+	err := DownloadEpisode(srv.Client(), t.TempDir(), ep, nil)
+	if err == nil {
+		t.Fatal("expected error for HTTP 500 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error should mention status code 500, got: %v", err)
+	}
+}
+
+func TestDownloadEpisodeEmptyURL(t *testing.T) {
+	ep := &EpisodeEntry{
+		GUID:  "empty-url",
+		Title: "No URL Episode",
+	}
+
+	err := DownloadEpisode(http.DefaultClient, t.TempDir(), ep, nil)
+	if err == nil {
+		t.Fatal("expected error for empty enclosure URL")
+	}
+	if !strings.Contains(err.Error(), "no enclosure URL") {
+		t.Errorf("error should mention missing URL, got: %v", err)
+	}
+}
+
+func TestDownloadEpisodeNetworkError(t *testing.T) {
+	// Create a listener, get the URL, then close it to simulate a connection refused.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	deadURL := "http://" + listener.Addr().String() + "/ep.mp3"
+	listener.Close()
+
+	dir := t.TempDir()
+	ep := &EpisodeEntry{
+		GUID:         "net-err",
+		Title:        "Network Error",
+		PubDate:      time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		EnclosureURL: deadURL,
+	}
+
+	err = DownloadEpisode(http.DefaultClient, dir, ep, nil)
+	if err == nil {
+		t.Fatal("expected error for network failure")
+	}
+
+	// Verify no temp file is left behind.
+	filename := EpisodeFilename(ep)
+	tmpPath := filepath.Join(dir, filename+".tmp")
+	if _, statErr := os.Stat(tmpPath); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Error("temp file should not exist after network error")
 	}
 }
