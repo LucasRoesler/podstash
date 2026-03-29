@@ -1,6 +1,8 @@
 package podstash
 
 import (
+	"errors"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -125,7 +127,7 @@ func TestDownloadEpisode(t *testing.T) {
 
 	// No temp file left behind.
 	tmpPath := path + ".tmp"
-	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(tmpPath); !errors.Is(err, fs.ErrNotExist) {
 		t.Error("temp file should not exist after download")
 	}
 }

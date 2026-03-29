@@ -2,7 +2,9 @@ package podstash
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -104,7 +106,7 @@ func LoadIndex(dir string) (*EpisodeIndex, error) {
 	path := filepath.Join(dir, indexFilename)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return &EpisodeIndex{}, nil
 		}
 		return nil, fmt.Errorf("load index: %w", err)
@@ -126,7 +128,7 @@ func ListPodcasts(dataDir string) ([]PodcastMeta, error) {
 	root := filepath.Join(dataDir, podcastsDir)
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("list podcasts: %w", err)

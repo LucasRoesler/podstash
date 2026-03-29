@@ -2,6 +2,8 @@ package podstash
 
 import (
 	"bytes"
+	"errors"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -179,7 +181,7 @@ func TestHandleDeletePodcast(t *testing.T) {
 	}
 
 	dir := PodcastDir(dataDir, "to-delete")
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+	if _, err := os.Stat(dir); !errors.Is(err, fs.ErrNotExist) {
 		t.Error("podcast directory should be deleted")
 	}
 }

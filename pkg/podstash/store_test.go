@@ -1,6 +1,8 @@
 package podstash
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -178,7 +180,7 @@ func TestAtomicWrite(t *testing.T) {
 
 	// Verify no temp file left behind.
 	tmpPath := filepath.Join(dir, metaFilename+".tmp")
-	if _, err := os.Stat(tmpPath); !os.IsNotExist(err) {
+	if _, err := os.Stat(tmpPath); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("temp file should not exist after successful write")
 	}
 
