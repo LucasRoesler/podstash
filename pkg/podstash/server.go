@@ -62,8 +62,12 @@ func Run(cfg Config) {
 	mux.HandleFunc("GET /opml", app.handleOPMLExport)
 	mux.HandleFunc("GET /healthz", app.handleHealthz)
 
+	// Create a cancellable context for background work.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Start poller.
-	go startPoller(app, cfg.PollInterval)
+	go startPoller(ctx, app, cfg.PollInterval)
 
 	// Start server with graceful shutdown.
 	addr := ":" + cfg.Port
@@ -74,9 +78,11 @@ func Run(cfg Config) {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		sig := <-sigCh
 		slog.Info("shutting down", "signal", sig)
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		srv.Shutdown(ctx)
+		cancel()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		// Ignore error — we're shutting down, best effort.
+		_ = srv.Shutdown(shutdownCtx)
 	}()
 
 	slog.Info("listening", "addr", addr)
@@ -111,13 +117,19 @@ func (w *statusWriter) WriteHeader(code int) {
 	w.ResponseWriter.WriteHeader(code)
 }
 
-func startPoller(app *App, interval time.Duration) {
+func startPoller(ctx context.Context, app *App, interval time.Duration) {
 	pollOnce(app)
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	for range ticker.C {
-		pollOnce(app)
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("poller stopped")
+			return
+		case <-ticker.C:
+			pollOnce(app)
+		}
 	}
 }
 
