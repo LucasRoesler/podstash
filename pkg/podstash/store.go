@@ -37,12 +37,12 @@ type PodcastMeta struct {
 	// SkipPatterns is a list of regex patterns. Episodes whose title or
 	// description matches any pattern are recorded in the index but skipped
 	// for download. Useful for filtering rebroadcasts, "best of" reruns, etc.
-	SkipPatterns []string `json:"skip_patterns,omitempty"`
+	SkipPatterns []string `json:"skip_patterns,omitzero"`
 
 	// DownloadAfter filters episodes by publish date. Episodes published
 	// before this date are recorded in the index but not downloaded.
 	// Zero value means no date filter (download all).
-	DownloadAfter *time.Time `json:"download_after,omitempty"`
+	DownloadAfter *time.Time `json:"download_after,omitzero"`
 
 	// Slug is the directory name, derived from Title. Not stored in JSON.
 	Slug string `json:"-"`
@@ -56,10 +56,10 @@ type EpisodeEntry struct {
 	EnclosureURL  string    `json:"enclosure_url"`
 	EnclosureType string    `json:"enclosure_type"`
 	Description   string    `json:"description"`
-	Filename      string    `json:"filename,omitempty"`
-	DownloadedAt  time.Time `json:"downloaded_at,omitempty"`
-	FileSize      int64     `json:"file_size,omitempty"`
-	Skipped       bool      `json:"skipped,omitempty"`
+	Filename      string    `json:"filename,omitzero"`
+	DownloadedAt  time.Time `json:"downloaded_at,omitzero"`
+	FileSize      int64     `json:"file_size,omitzero"`
+	Skipped       bool      `json:"skipped,omitzero"`
 }
 
 // EpisodeIndex is the list of all known episodes for a podcast.
