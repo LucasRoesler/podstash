@@ -232,3 +232,112 @@ func TestDownloadCoverImageEmpty(t *testing.T) {
 		t.Errorf("expected no error for empty URL, got: %v", err)
 	}
 }
+
+func TestDownloadPending(t *testing.T) {
+	content := []byte("episode audio data")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Write(content)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	os.MkdirAll(filepath.Join(dataDir, podcastsDir), 0755)
+
+	// Create an active podcast with a pending episode.
+	activeDir := filepath.Join(dataDir, podcastsDir, "active-pod")
+	os.MkdirAll(activeDir, 0755)
+	SaveMeta(activeDir, &PodcastMeta{
+		FeedURL: "https://example.com/active",
+		Title:   "active-pod",
+	})
+	SaveIndex(activeDir, &EpisodeIndex{
+		Episodes: []EpisodeEntry{
+			{
+				GUID:         "ep1",
+				Title:        "Pending Episode",
+				PubDate:      time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+				EnclosureURL: srv.URL + "/ep.mp3",
+			},
+		},
+	})
+
+	// Create a paused podcast — its episodes should NOT be downloaded.
+	pausedDir := filepath.Join(dataDir, podcastsDir, "paused-pod")
+	os.MkdirAll(pausedDir, 0755)
+	SaveMeta(pausedDir, &PodcastMeta{
+		FeedURL: "https://example.com/paused",
+		Title:   "paused-pod",
+		Paused:  true,
+	})
+	SaveIndex(pausedDir, &EpisodeIndex{
+		Episodes: []EpisodeEntry{
+			{
+				GUID:         "ep-paused",
+				Title:        "Paused Episode",
+				PubDate:      time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC),
+				EnclosureURL: srv.URL + "/paused.mp3",
+			},
+		},
+	})
+
+	err := DownloadPending(srv.Client(), dataDir, 2)
+	if err != nil {
+		t.Fatalf("DownloadPending: %v", err)
+	}
+
+	// Active podcast episode should be downloaded.
+	activeIdx, err := LoadIndex(activeDir)
+	if err != nil {
+		t.Fatalf("LoadIndex active: %v", err)
+	}
+	if len(activeIdx.Episodes) != 1 {
+		t.Fatalf("got %d episodes, want 1", len(activeIdx.Episodes))
+	}
+	if activeIdx.Episodes[0].Filename == "" {
+		t.Error("active episode should have been downloaded")
+	}
+
+	// Paused podcast episode should NOT be downloaded.
+	pausedIdx, err := LoadIndex(pausedDir)
+	if err != nil {
+		t.Fatalf("LoadIndex paused: %v", err)
+	}
+	if pausedIdx.Episodes[0].Filename != "" {
+		t.Errorf("paused episode should not be downloaded, got Filename = %q", pausedIdx.Episodes[0].Filename)
+	}
+}
+
+func TestDownloadPendingSkipsPaused(t *testing.T) {
+	requestCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		w.Write([]byte("data"))
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	os.MkdirAll(filepath.Join(dataDir, podcastsDir), 0755)
+
+	// Only a paused podcast exists.
+	dir := filepath.Join(dataDir, podcastsDir, "only-paused")
+	os.MkdirAll(dir, 0755)
+	SaveMeta(dir, &PodcastMeta{
+		FeedURL: "https://example.com/paused",
+		Title:   "only-paused",
+		Paused:  true,
+	})
+	SaveIndex(dir, &EpisodeIndex{
+		Episodes: []EpisodeEntry{
+			{GUID: "ep1", Title: "Ep", EnclosureURL: srv.URL + "/ep.mp3"},
+		},
+	})
+
+	err := DownloadPending(srv.Client(), dataDir, 2)
+	if err != nil {
+		t.Fatalf("DownloadPending: %v", err)
+	}
+	if requestCount != 0 {
+		t.Errorf("expected 0 HTTP requests for paused podcast, got %d", requestCount)
+	}
+}
