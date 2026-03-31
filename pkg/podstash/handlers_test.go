@@ -350,6 +350,124 @@ func TestHandleOPMLImport(t *testing.T) {
 	}
 }
 
+func TestHandlePodcastFeed(t *testing.T) {
+	app, dataDir := testApp(t)
+	slug := "feed-test"
+	dir := PodcastDir(dataDir, slug)
+	os.MkdirAll(dir, 0755)
+	SaveMeta(dir, &PodcastMeta{
+		FeedURL: "https://example.com/feed",
+		Title:   "Feed Test",
+		Slug:    slug,
+		AddedAt: time.Now().UTC(),
+	})
+	SaveIndex(dir, &EpisodeIndex{
+		Episodes: []EpisodeEntry{
+			{GUID: "ep1", Title: "Episode One", Filename: "ep1.mp3", FileSize: 1000, EnclosureType: "audio/mpeg", PubDate: time.Now().UTC()},
+			{GUID: "ep2", Title: "Not Downloaded"}, // no filename
+		},
+	})
+
+	req := httptest.NewRequest("GET", "/podcasts/feed-test/feed.xml", nil)
+	req.SetPathValue("slug", slug)
+	w := httptest.NewRecorder()
+	app.handlePodcastFeed(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "application/rss+xml") {
+		t.Errorf("Content-Type = %q, want rss+xml", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Episode One") {
+		t.Error("feed should contain downloaded episode")
+	}
+	if strings.Contains(body, "Not Downloaded") {
+		t.Error("feed should not contain episode without local file")
+	}
+	if !strings.Contains(body, "/podcasts/feed-test/episodes/ep1.mp3") {
+		t.Error("feed should contain local episode URL")
+	}
+}
+
+func TestHandlePodcastFeedNotFound(t *testing.T) {
+	app, _ := testApp(t)
+
+	req := httptest.NewRequest("GET", "/podcasts/nonexistent/feed.xml", nil)
+	req.SetPathValue("slug", "nonexistent")
+	w := httptest.NewRecorder()
+	app.handlePodcastFeed(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestHandleServeEpisode(t *testing.T) {
+	app, dataDir := testApp(t)
+	slug := "serve-test"
+	dir := PodcastDir(dataDir, slug)
+	os.MkdirAll(dir, 0755)
+	SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/feed", Title: slug, Slug: slug})
+
+	// Write a dummy file to serve.
+	episodeFile := filepath.Join(dir, "ep1.mp3")
+	os.WriteFile(episodeFile, []byte("fake audio data"), 0644)
+
+	req := httptest.NewRequest("GET", "/podcasts/serve-test/episodes/ep1.mp3", nil)
+	req.SetPathValue("slug", slug)
+	req.SetPathValue("filename", "ep1.mp3")
+	w := httptest.NewRecorder()
+	app.handleServeEpisode(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	if w.Body.String() != "fake audio data" {
+		t.Errorf("body = %q, want %q", w.Body.String(), "fake audio data")
+	}
+}
+
+func TestHandleServeEpisodeForbiddenFilenames(t *testing.T) {
+	app, _ := testApp(t)
+
+	tests := []string{
+		"../secret",            // path traversal
+		"../../etc/passwd",     // path traversal
+		"a/b",                  // directory component
+		".podstash.meta.json",  // internal metadata file (non-audio extension)
+		".podstash.index.json", // internal index file (non-audio extension)
+		"cover.jpg",            // non-audio extension
+	}
+	for _, filename := range tests {
+		req := httptest.NewRequest("GET", "/podcasts/pod/episodes/"+filename, nil)
+		req.SetPathValue("slug", "pod")
+		req.SetPathValue("filename", filename)
+		w := httptest.NewRecorder()
+		app.handleServeEpisode(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("filename %q: status = %d, want 404", filename, w.Code)
+		}
+	}
+}
+
+func TestHandleServeEpisodeNotFound(t *testing.T) {
+	app, dataDir := testApp(t)
+	seedPodcast(t, dataDir, "serve-missing")
+
+	req := httptest.NewRequest("GET", "/podcasts/serve-missing/episodes/missing.mp3", nil)
+	req.SetPathValue("slug", "serve-missing")
+	req.SetPathValue("filename", "missing.mp3")
+	w := httptest.NewRecorder()
+	app.handleServeEpisode(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
 func TestHandleOPMLExport(t *testing.T) {
 	app, dataDir := testApp(t)
 	seedPodcast(t, dataDir, "export-test")

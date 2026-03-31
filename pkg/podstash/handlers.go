@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -31,6 +32,7 @@ type PodcastView struct {
 // PodcastDetailView holds data for the podcast detail page.
 type PodcastDetailView struct {
 	Meta               PodcastMeta
+	FeedURL            string
 	TotalEpisodes      int
 	DownloadedEpisodes int
 	SkippedEpisodes    int
@@ -118,6 +120,7 @@ func (app *App) handlePodcast(w http.ResponseWriter, r *http.Request) {
 
 	app.render(w, "podcast.html", PodcastDetailView{
 		Meta:               *meta,
+		FeedURL:            requestBaseURL(r) + "/podcasts/" + slug + "/feed.xml",
 		TotalEpisodes:      len(idx.Episodes),
 		DownloadedEpisodes: downloaded,
 		SkippedEpisodes:    skipped,
@@ -475,6 +478,79 @@ func (app *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	// Ignore error — response already committed, nothing useful to do on write failure.
 	_, _ = w.Write([]byte(`{"status":"ok"}` + "\n"))
+}
+
+// requestBaseURL returns the scheme+host for constructing absolute URLs.
+// Respects X-Forwarded-Proto for deployments behind a reverse proxy.
+func requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.Header.Get("X-Forwarded-Proto") == "https" || r.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
+func (app *App) handlePodcastFeed(w http.ResponseWriter, r *http.Request) {
+	slug, ok := slugParam(w, r)
+	if !ok {
+		return
+	}
+	dir := PodcastDir(app.DataDir, slug)
+
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	idx, err := LoadIndex(dir)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data, err := GenerateFeed(meta, idx.Episodes, requestBaseURL(r))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/rss+xml; charset=utf-8")
+	// Ignore error — response already committed, nothing useful to do on write failure.
+	_, _ = w.Write(data)
+}
+
+// audioExtensions is the set of file extensions this server will serve as episode files.
+var audioExtensions = map[string]bool{
+	".mp3":  true,
+	".m4a":  true,
+	".ogg":  true,
+	".opus": true,
+	".flac": true,
+	".wav":  true,
+}
+
+func (app *App) handleServeEpisode(w http.ResponseWriter, r *http.Request) {
+	slug, ok := slugParam(w, r)
+	if !ok {
+		return
+	}
+
+	// filepath.Base strips all directory components, preventing path traversal.
+	filename := filepath.Base(r.PathValue("filename"))
+	if filename == "." || filename == ".." {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Only serve known audio file extensions to prevent leaking index/meta files.
+	if !audioExtensions[strings.ToLower(filepath.Ext(filename))] {
+		http.NotFound(w, r)
+		return
+	}
+
+	path := filepath.Join(PodcastDir(app.DataDir, slug), filename)
+	http.ServeFile(w, r, path)
 }
 
 func (app *App) render(w http.ResponseWriter, name string, data any) {
