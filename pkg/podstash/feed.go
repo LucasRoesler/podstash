@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -186,6 +188,84 @@ func ParsePubDate(s string) time.Time {
 		}
 	}
 	return time.Time{}
+}
+
+// GenerateFeed builds an RSS feed document for the locally-downloaded episodes
+// of a podcast. Only episodes with a downloaded file are included. The
+// enclosure URLs are constructed using baseURL so that podcast clients can
+// fetch the audio directly from this server.
+//
+// Episodes are sorted newest-first, matching standard podcast feed conventions.
+func GenerateFeed(meta *PodcastMeta, episodes []EpisodeEntry, baseURL string) ([]byte, error) {
+	// Collect only downloaded episodes, sorted newest-first.
+	downloaded := make([]EpisodeEntry, 0, len(episodes))
+	for _, ep := range episodes {
+		if ep.Filename != "" {
+			downloaded = append(downloaded, ep)
+		}
+	}
+	slices.SortFunc(downloaded, func(a, b EpisodeEntry) int {
+		return b.PubDate.Compare(a.PubDate)
+	})
+
+	items := make([]rssOutputItem, 0, len(downloaded))
+	for _, ep := range downloaded {
+		enclosureURL := baseURL + "/podcasts/" + meta.Slug + "/episodes/" + ep.Filename
+		pubDate := ""
+		if !ep.PubDate.IsZero() {
+			pubDate = ep.PubDate.Format(time.RFC1123Z)
+		}
+		items = append(items, rssOutputItem{
+			Title:       ep.Title,
+			Description: ep.Description,
+			GUID:        ep.GUID,
+			PubDate:     pubDate,
+			Enclosure: RSSEnclosure{
+				URL:    enclosureURL,
+				Length: strconv.FormatInt(ep.FileSize, 10),
+				Type:   ep.EnclosureType,
+			},
+		})
+	}
+
+	feed := &rssOutput{
+		Version: "2.0",
+		Channel: rssOutputChannel{
+			Title:       meta.Title,
+			Description: meta.Description,
+			Items:       items,
+		},
+	}
+
+	out, err := xml.MarshalIndent(feed, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("generate feed: %w", err)
+	}
+	return append([]byte(xml.Header), out...), nil
+}
+
+// rssOutput, rssOutputChannel, and rssOutputItem are minimal RSS 2.0 structures
+// used only for marshalling (output). The existing RSSFeed/RSSChannel/RSSItem
+// types carry iTunes-namespace fields with xml tags that would emit empty
+// elements when marshalled with zero values, so we use separate output types.
+type rssOutput struct {
+	XMLName xml.Name         `xml:"rss"`
+	Version string           `xml:"version,attr"`
+	Channel rssOutputChannel `xml:"channel"`
+}
+
+type rssOutputChannel struct {
+	Title       string          `xml:"title"`
+	Description string          `xml:"description,omitempty"`
+	Items       []rssOutputItem `xml:"item"`
+}
+
+type rssOutputItem struct {
+	Title       string       `xml:"title"`
+	Description string       `xml:"description,omitempty"`
+	GUID        string       `xml:"guid"`
+	PubDate     string       `xml:"pubDate,omitempty"`
+	Enclosure   RSSEnclosure `xml:"enclosure"`
 }
 
 // RefreshPodcast fetches the RSS feed for a podcast and adds any new episodes

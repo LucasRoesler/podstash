@@ -50,6 +50,10 @@ func Run(cfg Config) {
 	mux.HandleFunc("GET /podcasts/{slug}", app.handlePodcast)
 	mux.HandleFunc("GET /add", app.handleAddPage)
 
+	// Podcast client integration.
+	mux.HandleFunc("GET /podcasts/{slug}/feed.xml", app.handlePodcastFeed)
+	mux.HandleFunc("GET /podcasts/{slug}/episodes/{filename}", app.handleServeEpisode)
+
 	// Actions.
 	mux.HandleFunc("POST /podcasts", app.handleAddPodcast)
 	mux.HandleFunc("POST /podcasts/{slug}/delete", app.handleDeletePodcast)

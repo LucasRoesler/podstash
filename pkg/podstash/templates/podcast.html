@@ -9,13 +9,20 @@
 </p>
 {{if .Meta.Description}}<p class="text-lighter">{{truncate .Meta.Description 300}}</p>{{end}}
 
-<div class="hstack gap-1 mt-4 mb-4">
+<div class="hstack gap-1 mt-4 mb-2">
   <form method="POST" action="/podcasts/{{.Meta.Slug}}/refresh">
     <button type="submit" data-variant="secondary" class="small">Refresh Feed</button>
   </form>
   <form method="POST" action="/podcasts/{{.Meta.Slug}}/pause">
     <button type="submit" data-variant="secondary" class="small">{{if .Meta.Paused}}Unpause{{else}}Pause{{end}}</button>
   </form>
+</div>
+<div class="mb-4">
+  <label class="text-lighter">Local RSS feed</label>
+  <fieldset class="group">
+    <input type="text" readonly value="{{.FeedURL}}" id="feed-url">
+    <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('feed-url').value)">Copy</button>
+  </fieldset>
 </div>
 
 <details class="mb-4">

@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -409,6 +410,73 @@ func TestRefreshPodcastSkipPatterns(t *testing.T) {
 	}
 	if unskippedCount != 1 {
 		t.Errorf("unskipped %d episodes, want 1", unskippedCount)
+	}
+}
+
+func TestGenerateFeed(t *testing.T) {
+	meta := &PodcastMeta{
+		Slug:        "my-podcast",
+		Title:       "My Podcast",
+		Description: "A test podcast",
+	}
+
+	older := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	episodes := []EpisodeEntry{
+		{GUID: "ep1", Title: "First", PubDate: older, Filename: "2025-01-01-first.mp3", FileSize: 1000, EnclosureType: "audio/mpeg"},
+		{GUID: "ep2", Title: "Second", PubDate: newer, Filename: "2025-03-01-second.mp3", FileSize: 2000, EnclosureType: "audio/mpeg"},
+		{GUID: "ep3", Title: "Not Downloaded", PubDate: newer}, // no Filename — must be excluded
+	}
+
+	data, err := GenerateFeed(meta, episodes, "http://localhost:8080")
+	if err != nil {
+		t.Fatalf("GenerateFeed: %v", err)
+	}
+
+	xml := string(data)
+
+	// Only downloaded episodes should appear.
+	if !strings.Contains(xml, "First") {
+		t.Error("feed should contain downloaded episode 'First'")
+	}
+	if !strings.Contains(xml, "Second") {
+		t.Error("feed should contain downloaded episode 'Second'")
+	}
+	if strings.Contains(xml, "Not Downloaded") {
+		t.Error("feed should NOT contain episode without a local file")
+	}
+
+	// Enclosure URLs should point to the local server.
+	if !strings.Contains(xml, "http://localhost:8080/podcasts/my-podcast/episodes/2025-01-01-first.mp3") {
+		t.Error("feed should contain local enclosure URL for first episode")
+	}
+	if !strings.Contains(xml, "http://localhost:8080/podcasts/my-podcast/episodes/2025-03-01-second.mp3") {
+		t.Error("feed should contain local enclosure URL for second episode")
+	}
+
+	// Newer episode should appear before older (newest-first ordering).
+	firstIdx := strings.Index(xml, "2025-03-01-second.mp3")
+	secondIdx := strings.Index(xml, "2025-01-01-first.mp3")
+	if firstIdx > secondIdx {
+		t.Error("episodes should be sorted newest-first")
+	}
+}
+
+func TestGenerateFeedEmpty(t *testing.T) {
+	meta := &PodcastMeta{Slug: "empty", Title: "Empty Podcast"}
+
+	data, err := GenerateFeed(meta, nil, "http://localhost:8080")
+	if err != nil {
+		t.Fatalf("GenerateFeed: %v", err)
+	}
+
+	xml := string(data)
+	if !strings.Contains(xml, "Empty Podcast") {
+		t.Error("feed should contain podcast title")
+	}
+	if strings.Contains(xml, "<item>") {
+		t.Error("feed should have no items when no episodes are downloaded")
 	}
 }
 
