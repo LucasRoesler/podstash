@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -118,13 +119,18 @@ func (app *App) handlePodcast(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	episodes := slices.Clone(idx.Episodes)
+	slices.SortFunc(episodes, func(a, b EpisodeEntry) int {
+		return b.PubDate.Compare(a.PubDate)
+	})
+
 	app.render(w, "podcast.html", PodcastDetailView{
 		Meta:               *meta,
 		FeedURL:            requestBaseURL(r) + "/podcasts/" + slug + "/feed.xml",
 		TotalEpisodes:      len(idx.Episodes),
 		DownloadedEpisodes: downloaded,
 		SkippedEpisodes:    skipped,
-		Episodes:           idx.Episodes,
+		Episodes:           episodes,
 	})
 }
 

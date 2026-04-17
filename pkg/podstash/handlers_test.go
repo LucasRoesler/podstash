@@ -103,6 +103,39 @@ func TestHandlePodcastDetail(t *testing.T) {
 	}
 }
 
+func TestHandlePodcastDetailEpisodeOrder(t *testing.T) {
+	app, dataDir := testApp(t)
+	dir := PodcastDir(dataDir, "ordered")
+	os.MkdirAll(dir, 0755)
+	SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/ordered", Title: "Ordered", Slug: "ordered", AddedAt: time.Now().UTC()})
+	SaveIndex(dir, &EpisodeIndex{
+		Episodes: []EpisodeEntry{
+			{GUID: "old", Title: "Oldest", PubDate: time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)},
+			{GUID: "new", Title: "Newest", PubDate: time.Date(2026, 4, 16, 0, 0, 0, 0, time.UTC)},
+			{GUID: "mid", Title: "Middle", PubDate: time.Date(2026, 3, 26, 0, 0, 0, 0, time.UTC)},
+		},
+	})
+
+	req := httptest.NewRequest("GET", "/podcasts/ordered", nil)
+	req.SetPathValue("slug", "ordered")
+	w := httptest.NewRecorder()
+	app.handlePodcast(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d", w.Code)
+	}
+	body := w.Body.String()
+	newestIdx := strings.Index(body, "Newest")
+	middleIdx := strings.Index(body, "Middle")
+	oldestIdx := strings.Index(body, "Oldest")
+	if newestIdx < 0 || middleIdx < 0 || oldestIdx < 0 {
+		t.Fatalf("missing episode titles in body: newest=%d middle=%d oldest=%d", newestIdx, middleIdx, oldestIdx)
+	}
+	if !(newestIdx < middleIdx && middleIdx < oldestIdx) {
+		t.Errorf("episodes not sorted by pub_date desc: newest=%d middle=%d oldest=%d", newestIdx, middleIdx, oldestIdx)
+	}
+}
+
 func TestHandlePodcastDetailNotFound(t *testing.T) {
 	app, _ := testApp(t)
 
