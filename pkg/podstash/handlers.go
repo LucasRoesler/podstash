@@ -526,6 +526,20 @@ func (app *App) handlePodcastFeed(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+func (app *App) handleServeCover(w http.ResponseWriter, r *http.Request) {
+	slug, ok := slugParam(w, r)
+	if !ok {
+		return
+	}
+
+	path := filepath.Join(PodcastDir(app.DataDir, slug), coverFilename)
+	if _, err := os.Stat(path); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, path)
+}
+
 // audioExtensions is the set of file extensions this server will serve as episode files.
 var audioExtensions = map[string]bool{
 	".mp3":  true,

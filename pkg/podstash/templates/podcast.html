@@ -1,13 +1,18 @@
 {{define "title"}}{{.Meta.Title}} — podstash{{end}}
 
 {{define "content"}}
-<h1>{{.Meta.Title}}</h1>
-<p class="text-light">
-  {{if .Meta.Author}}<strong>{{.Meta.Author}}</strong> · {{end}}
-  {{.TotalEpisodes}} episodes · {{.DownloadedEpisodes}} downloaded{{if .SkippedEpisodes}} · {{.SkippedEpisodes}} skipped{{end}}
-  {{if .Meta.Paused}} · <span class="badge" data-variant="warning">Paused</span>{{end}}
-</p>
-{{if .Meta.Description}}<p class="text-lighter">{{truncate .Meta.Description 300}}</p>{{end}}
+<div class="hstack gap-4 items-start mb-4">
+  <img src="/podcasts/{{.Meta.Slug}}/cover.jpg" alt="{{.Meta.Title}} cover" style="width:120px;height:120px;object-fit:cover;border-radius:6px;flex-shrink:0">
+  <div style="min-width:0">
+    <h1 style="margin-top:0">{{.Meta.Title}}</h1>
+    <p class="text-light" style="margin-top:0">
+      {{if .Meta.Author}}<strong>{{.Meta.Author}}</strong> · {{end}}
+      {{.TotalEpisodes}} episodes · {{.DownloadedEpisodes}} downloaded{{if .SkippedEpisodes}} · {{.SkippedEpisodes}} skipped{{end}}
+      {{if .Meta.Paused}} · <span class="badge" data-variant="warning">Paused</span>{{end}}
+    </p>
+    {{if .Meta.Description}}<p class="text-lighter">{{truncate .Meta.Description 300}}</p>{{end}}
+  </div>
+</div>
 
 <div class="hstack gap-1 mt-4 mb-2">
   <form method="POST" action="/podcasts/{{.Meta.Slug}}/refresh">

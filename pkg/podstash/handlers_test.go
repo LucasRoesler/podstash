@@ -422,6 +422,9 @@ func TestHandlePodcastFeed(t *testing.T) {
 	if !strings.Contains(body, "/podcasts/feed-test/episodes/ep1.mp3") {
 		t.Error("feed should contain local episode URL")
 	}
+	if !strings.Contains(body, "/podcasts/feed-test/cover.jpg") {
+		t.Error("feed should contain local cover image URL")
+	}
 }
 
 func TestHandlePodcastFeedNotFound(t *testing.T) {
@@ -495,6 +498,44 @@ func TestHandleServeEpisodeNotFound(t *testing.T) {
 	req.SetPathValue("filename", "missing.mp3")
 	w := httptest.NewRecorder()
 	app.handleServeEpisode(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestHandleServeCover(t *testing.T) {
+	app, dataDir := testApp(t)
+	slug := "cover-test"
+	dir := PodcastDir(dataDir, slug)
+	os.MkdirAll(dir, 0755)
+	SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/feed", Title: slug, Slug: slug})
+
+	// Write a fake cover image.
+	coverData := []byte("fake jpeg data")
+	os.WriteFile(filepath.Join(dir, coverFilename), coverData, 0644)
+
+	req := httptest.NewRequest("GET", "/podcasts/cover-test/cover.jpg", nil)
+	req.SetPathValue("slug", slug)
+	w := httptest.NewRecorder()
+	app.handleServeCover(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if w.Body.String() != string(coverData) {
+		t.Errorf("body = %q, want %q", w.Body.String(), coverData)
+	}
+}
+
+func TestHandleServeCoverNotFound(t *testing.T) {
+	app, dataDir := testApp(t)
+	seedPodcast(t, dataDir, "no-cover")
+
+	req := httptest.NewRequest("GET", "/podcasts/no-cover/cover.jpg", nil)
+	req.SetPathValue("slug", "no-cover")
+	w := httptest.NewRecorder()
+	app.handleServeCover(w, req)
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404", w.Code)

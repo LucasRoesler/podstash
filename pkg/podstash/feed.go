@@ -228,11 +228,19 @@ func GenerateFeed(meta *PodcastMeta, episodes []EpisodeEntry, baseURL string) ([
 		})
 	}
 
+	coverURL := baseURL + "/podcasts/" + meta.Slug + "/cover.jpg"
 	feed := &rssOutput{
-		Version: "2.0",
+		Version:  "2.0",
+		ITunesNS: itunesNS,
 		Channel: rssOutputChannel{
 			Title:       meta.Title,
 			Description: meta.Description,
+			Image: &rssOutputImage{
+				URL:   coverURL,
+				Title: meta.Title,
+				Link:  baseURL,
+			},
+			ITunesImage: &rssOutputITunesImage{Href: coverURL},
 			Items:       items,
 		},
 	}
@@ -249,14 +257,30 @@ func GenerateFeed(meta *PodcastMeta, episodes []EpisodeEntry, baseURL string) ([
 // types carry iTunes-namespace fields with xml tags that would emit empty
 // elements when marshalled with zero values, so we use separate output types.
 type rssOutput struct {
-	XMLName xml.Name         `xml:"rss"`
-	Version string           `xml:"version,attr"`
-	Channel rssOutputChannel `xml:"channel"`
+	XMLName  xml.Name         `xml:"rss"`
+	Version  string           `xml:"version,attr"`
+	ITunesNS string           `xml:"xmlns:itunes,attr"`
+	Channel  rssOutputChannel `xml:"channel"`
+}
+
+// rssOutputImage is the standard RSS 2.0 <image> element.
+type rssOutputImage struct {
+	URL   string `xml:"url"`
+	Title string `xml:"title"`
+	Link  string `xml:"link,omitempty"`
+}
+
+// rssOutputITunesImage is the iTunes <itunes:image> element.
+type rssOutputITunesImage struct {
+	XMLName xml.Name `xml:"itunes:image"`
+	Href    string   `xml:"href,attr"`
 }
 
 type rssOutputChannel struct {
 	Title       string          `xml:"title"`
 	Description string          `xml:"description,omitempty"`
+	Image       *rssOutputImage `xml:"image,omitempty"`
+	ITunesImage *rssOutputITunesImage
 	Items       []rssOutputItem `xml:"item"`
 }
 

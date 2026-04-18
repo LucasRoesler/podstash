@@ -52,6 +52,7 @@ func Run(cfg Config) {
 
 	// Podcast client integration.
 	mux.HandleFunc("GET /podcasts/{slug}/feed.xml", app.handlePodcastFeed)
+	mux.HandleFunc("GET /podcasts/{slug}/cover.jpg", app.handleServeCover)
 	mux.HandleFunc("GET /podcasts/{slug}/episodes/{filename}", app.handleServeEpisode)
 
 	// Actions.

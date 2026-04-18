@@ -9,18 +9,23 @@
   <div class="col col-6">
     <a href="/podcasts/{{.Meta.Slug}}" class="card-link">
       <div class="card">
-        <div class="hstack justify-between items-center">
-          <h3 style="margin:0">{{.Meta.Title}}</h3>
-          {{if .Meta.Paused}}
-            <span class="badge" data-variant="warning">Paused</span>
-          {{else}}
-            <span class="badge" data-variant="success">Active</span>
-          {{end}}
+        <div class="hstack gap-3 items-center">
+          <img src="/podcasts/{{.Meta.Slug}}/cover.jpg" alt="{{.Meta.Title}} cover" style="width:64px;height:64px;object-fit:cover;border-radius:4px;flex-shrink:0">
+          <div style="min-width:0">
+            <div class="hstack justify-between items-center">
+              <h3 style="margin:0">{{.Meta.Title}}</h3>
+              {{if .Meta.Paused}}
+                <span class="badge" data-variant="warning">Paused</span>
+              {{else}}
+                <span class="badge" data-variant="success">Active</span>
+              {{end}}
+            </div>
+            <p class="text-light mt-2" style="margin-bottom:0">
+              {{.DownloadedEpisodes}} / {{.TotalEpisodes}} episodes
+              · checked {{formatTime .Meta.LastCheckedAt}}
+            </p>
+          </div>
         </div>
-        <p class="text-light mt-2" style="margin-bottom:0">
-          {{.DownloadedEpisodes}} / {{.TotalEpisodes}} episodes
-          · checked {{formatTime .Meta.LastCheckedAt}}
-        </p>
       </div>
     </a>
   </div>

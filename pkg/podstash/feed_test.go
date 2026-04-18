@@ -463,6 +463,15 @@ func TestGenerateFeed(t *testing.T) {
 	if firstIdx > secondIdx {
 		t.Error("episodes should be sorted newest-first")
 	}
+
+	// Cover image URL should appear in both <image> and <itunes:image>.
+	coverURL := "http://localhost:8080/podcasts/my-podcast/cover.jpg"
+	if !strings.Contains(xml, coverURL) {
+		t.Errorf("feed should contain cover URL %q", coverURL)
+	}
+	if !strings.Contains(xml, `itunes:image`) {
+		t.Error("feed should contain itunes:image element")
+	}
 }
 
 func TestGenerateFeedEmpty(t *testing.T) {
