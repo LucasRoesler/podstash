@@ -981,3 +981,65 @@ func TestRefreshPodcastReportsCorruptIndex(t *testing.T) {
 		t.Error("refresh with a corrupt index returned nil, want an error")
 	}
 }
+
+// A refresh a person asked for must re-fetch the feed rather than silently
+// taking the 304 fast path, which would make the refresh button look broken.
+func TestForceRefreshPodcastIgnoresValidators(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const etag = `"v1"`
+	var conditional, full int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			conditional++
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		full++
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "forced"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Forced", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	if full != 1 {
+		t.Fatalf("full fetches after first refresh = %d, want 1", full)
+	}
+
+	// A background poll takes the 304 path.
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("polled refresh: %v", err)
+	}
+	if conditional != 1 {
+		t.Errorf("conditional requests = %d, want 1", conditional)
+	}
+	if full != 1 {
+		t.Errorf("full fetches = %d, want still 1 after a polled refresh", full)
+	}
+
+	// A forced refresh must fetch in full despite the stored validators.
+	if _, err := ForceRefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("forced refresh: %v", err)
+	}
+	if full != 2 {
+		t.Errorf("full fetches = %d, want 2 after a forced refresh", full)
+	}
+	if conditional != 1 {
+		t.Errorf("forced refresh sent a conditional request: %d, want 1", conditional)
+	}
+}

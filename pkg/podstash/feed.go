@@ -217,7 +217,7 @@ func FetchFeedConditional(client HTTPClient, url string, prev FeedValidators) (*
 	}
 	feed, err := ParseFeed(data)
 	if err != nil {
-		return nil, FeedValidators{}, err
+		return nil, FeedValidators{}, fmt.Errorf("parse feed: %w", err)
 	}
 	return feed, next, nil
 }
@@ -378,9 +378,24 @@ func indexIsUsable(dir string) bool {
 	return err == nil
 }
 
+// ForceRefreshPodcast refreshes ignoring stored cache validators, so the feed
+// is fetched and parsed in full. Used for refreshes a person explicitly asked
+// for, where a silent 304 would make the action look broken.
+func ForceRefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error) {
+	return refreshPodcast(client, dataDir, slug, true)
+}
+
 // RefreshPodcast fetches the RSS feed for a podcast and adds any new episodes
 // to the index. Returns the number of new episodes added.
+//
+// The fetch is conditional: when a usable index and stored validators exist,
+// a server that answers 304 lets this skip the download, the parse, and the
+// index write. Use ForceRefreshPodcast to bypass that.
 func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error) {
+	return refreshPodcast(client, dataDir, slug, false)
+}
+
+func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) (int, error) {
 	dir := PodcastDir(dataDir, slug)
 	mu := podcastMu(slug)
 	mu.Lock()
@@ -398,7 +413,7 @@ func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error)
 	// with an empty index. Fetching unconditionally in that case restores the
 	// self-healing the full-parse-every-poll behaviour used to provide.
 	prev := FeedValidators{}
-	if indexIsUsable(dir) {
+	if !force && indexIsUsable(dir) {
 		prev = FeedValidators{ETag: meta.ETag, LastModified: meta.LastModified}
 	}
 
