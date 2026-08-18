@@ -250,6 +250,12 @@ func (app *App) handleRefreshPodcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Marked here rather than inside the goroutine: a delete landing while the
+	// refresh is in flight calls Forget, and a later Mark would reinsert the
+	// deleted slug into the map for the life of the process. The podcast is
+	// known to exist at this point, and the request itself is the check.
+	app.Heartbeat.Mark(slug, time.Now().UTC())
+
 	go func() {
 		// A person asked for this refresh, so ignore cache validators: a
 		// silent 304 would make the button look broken.
@@ -258,7 +264,6 @@ func (app *App) handleRefreshPodcast(w http.ResponseWriter, r *http.Request) {
 			slog.Error("refresh failed", "podcast", slug, "error", err)
 			return
 		}
-		app.Heartbeat.Mark(slug, time.Now().UTC())
 		slog.Info("refresh complete", "podcast", slug, "added", added)
 	}()
 

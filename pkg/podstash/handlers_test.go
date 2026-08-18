@@ -850,3 +850,53 @@ func TestHandleHomeFallsBackToLastChangedAt(t *testing.T) {
 		t.Errorf("home page did not show the poll time after a poll:\n%s", body)
 	}
 }
+
+// The home page label has four states, and the two zero-time ones must render
+// no label and no orphaned separator.
+func TestHomeTemplateActivityLabelStates(t *testing.T) {
+	when := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		view        PodcastView
+		wantChecked bool
+		wantUpdated bool
+	}{
+		{
+			name:        "polled with a time",
+			view:        PodcastView{Meta: PodcastMeta{Title: "A"}, LastActivity: when, Polled: true},
+			wantChecked: true,
+		},
+		{
+			name:        "not polled, falls back to the change time",
+			view:        PodcastView{Meta: PodcastMeta{Title: "B"}, LastActivity: when},
+			wantUpdated: true,
+		},
+		{
+			name: "no time at all",
+			view: PodcastView{Meta: PodcastMeta{Title: "C"}},
+		},
+		{
+			name: "polled but no time recorded",
+			view: PodcastView{Meta: PodcastMeta{Title: "D"}, Polled: true},
+		},
+	}
+
+	tmpl := loadTemplates()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sb strings.Builder
+			err := tmpl["home.html"].ExecuteTemplate(&sb, "layout.html", HomeData{Podcasts: []PodcastView{tt.view}})
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			out := sb.String()
+
+			if got := strings.Contains(out, "checked"); got != tt.wantChecked {
+				t.Errorf(`"checked" present = %v, want %v`, got, tt.wantChecked)
+			}
+			if got := strings.Contains(out, "updated"); got != tt.wantUpdated {
+				t.Errorf(`"updated" present = %v, want %v`, got, tt.wantUpdated)
+			}
+		})
+	}
+}

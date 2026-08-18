@@ -65,3 +65,19 @@ func TestPollHeartbeatNilIsSafe(t *testing.T) {
 		t.Error("nil heartbeat reported a poll time")
 	}
 }
+
+// A delete landing while a refresh is in flight must not leave the deleted
+// slug in the map: nothing reads it back, but it is never reclaimed either.
+func TestPollHeartbeatForgetIsNotUndoneByLaterMark(t *testing.T) {
+	h := NewPollHeartbeat()
+	slug := "deleted-mid-refresh"
+
+	// The refresh handler marks before launching its goroutine, so by the time
+	// a delete calls Forget there is no later Mark to reinsert the entry.
+	h.Mark(slug, time.Now().UTC())
+	h.Forget(slug)
+
+	if _, ok := h.LastPolled(slug); ok {
+		t.Error("deleted slug still present in the heartbeat map")
+	}
+}
