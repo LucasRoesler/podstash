@@ -44,6 +44,20 @@ func (h *PollHeartbeat) LastPolled(slug string) (time.Time, bool) {
 	return t, ok
 }
 
+// RetainPodcasts drops every entry that does not correspond to one of the given
+// podcasts. Callers already hold a ListPodcasts result; this saves them building
+// the slug set themselves.
+func (h *PollHeartbeat) RetainPodcasts(podcasts []PodcastMeta) {
+	if h == nil {
+		return
+	}
+	live := make(map[string]struct{}, len(podcasts))
+	for _, p := range podcasts {
+		live[p.Slug] = struct{}{}
+	}
+	h.Retain(live)
+}
+
 // Retain drops every entry whose slug is not in keep.
 //
 // Marks and deletes race by nature: the poller and the refresh handler both

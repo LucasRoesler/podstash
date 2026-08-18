@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"slices"
@@ -52,7 +53,7 @@ const maxValidatorLen = 512
 // answers 304 for everything until that date arrives, so a feed stamped years
 // ahead by a skewed clock would stop delivering episodes with no way back.
 // Dropping it costs one unconditional fetch per poll for that feed.
-func usableLastModified(v string) string {
+func usableLastModified(v, url string) string {
 	v = boundedValidator(v)
 	if v == "" {
 		return ""
@@ -64,6 +65,10 @@ func usableLastModified(v string) string {
 		return v
 	}
 	if t.After(time.Now()) {
+		// Dropping it costs a full fetch every poll for this feed, so say so:
+		// a stuck clock would otherwise degrade quietly and forever.
+		slog.Warn("ignoring future Last-Modified from feed server",
+			"last_modified", v, "url", url)
 		return ""
 	}
 	return v
@@ -212,7 +217,7 @@ func FetchFeedConditional(client HTTPClient, url string, prev FeedValidators) (*
 
 	next := FeedValidators{
 		ETag:         boundedValidator(resp.Header.Get("ETag")),
-		LastModified: usableLastModified(resp.Header.Get("Last-Modified")),
+		LastModified: usableLastModified(resp.Header.Get("Last-Modified"), url),
 	}
 
 	if resp.StatusCode == http.StatusNotModified {

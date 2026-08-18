@@ -105,3 +105,21 @@ func TestPollHeartbeatRetainNilIsSafe(t *testing.T) {
 	var h *PollHeartbeat
 	h.Retain(map[string]struct{}{"anything": {}})
 }
+
+// RetainPodcasts is what the poller and the home page both call, so it takes
+// the podcast list they already hold.
+func TestPollHeartbeatRetainPodcasts(t *testing.T) {
+	h := NewPollHeartbeat()
+	now := time.Now().UTC()
+	h.Mark("kept", now)
+	h.Mark("gone", now)
+
+	h.RetainPodcasts([]PodcastMeta{{Slug: "kept"}})
+
+	if _, ok := h.LastPolled("kept"); !ok {
+		t.Error("RetainPodcasts dropped a live podcast")
+	}
+	if _, ok := h.LastPolled("gone"); ok {
+		t.Error("RetainPodcasts kept a podcast that no longer exists")
+	}
+}

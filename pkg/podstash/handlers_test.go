@@ -905,12 +905,17 @@ func TestHomeTemplateActivityLabelStates(t *testing.T) {
 
 // A refresh and a delete arriving together must not leave the deleted slug in
 // the heartbeat map: both handlers take the per-podcast lock, so the Mark
-// either precedes the Forget or never happens.
+// either precedes the Forget or never happens. (The poller reconciles the map
+// separately, since it marks outside that lock.)
+//
+// The iteration count is deliberately high. Only a fraction of interleavings
+// expose an unlocked Mark, and at 20 iterations an unlocked build still passed
+// roughly one run in ten.
 func TestRefreshAndDeleteDoNotLeakHeartbeatEntry(t *testing.T) {
 	app, dataDir := testApp(t)
 	app.Heartbeat = NewPollHeartbeat()
 
-	for i := range 20 {
+	for i := range 200 {
 		slug := fmt.Sprintf("racer-%d", i)
 		dir := PodcastDir(dataDir, slug)
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -933,9 +938,11 @@ func TestRefreshAndDeleteDoNotLeakHeartbeatEntry(t *testing.T) {
 		})
 		wg.Wait()
 
-		// The podcast is gone, so nothing may still be tracking it.
+		// The delete handler holds the lock across RemoveAll while the refresh
+		// handler holds it only around a LoadMeta, so the directory is always
+		// gone by here and the assertion always runs.
 		if _, err := os.Stat(dir); err == nil {
-			continue // delete lost the race; nothing to assert
+			t.Fatalf("%s: podcast directory survived the delete", slug)
 		}
 		if _, ok := app.Heartbeat.LastPolled(slug); ok {
 			t.Fatalf("%s: deleted podcast still in the heartbeat map", slug)
@@ -972,5 +979,34 @@ func TestHandleHomeDropsHeartbeatEntriesForDeletedPodcasts(t *testing.T) {
 	}
 	if _, ok := app.Heartbeat.LastPolled(slug); !ok {
 		t.Error("entry for a live podcast was dropped")
+	}
+}
+
+// A headless install serves only feed.xml, so the home page may never render.
+// The poller reconciles too, which bounds the map without any UI traffic.
+func TestPollOnceDropsHeartbeatEntriesForDeletedPodcasts(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	slug := "live"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.invalid/f.xml", Title: "Live", Paused: true}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	app.Heartbeat.Mark(slug, time.Now().UTC())
+	// What a poller mark racing a delete leaves behind.
+	app.Heartbeat.Mark("ghost", time.Now().UTC())
+
+	pollOnce(app)
+
+	if _, ok := app.Heartbeat.LastPolled("ghost"); ok {
+		t.Error("stale entry survived a poll")
+	}
+	if _, ok := app.Heartbeat.LastPolled(slug); !ok {
+		t.Error("entry for an existing podcast was dropped by a poll")
 	}
 }

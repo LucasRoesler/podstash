@@ -81,12 +81,9 @@ func (app *App) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reconcile the heartbeat against the podcasts that actually exist, so a
-	// slug deleted while a mark was in flight cannot linger.
-	live := make(map[string]struct{}, len(podcasts))
-	for _, p := range podcasts {
-		live[p.Slug] = struct{}{}
-	}
-	app.Heartbeat.Retain(live)
+	// slug deleted while a mark was in flight cannot linger. The poller does
+	// the same after each pass; this keeps the page itself consistent.
+	app.Heartbeat.RetainPodcasts(podcasts)
 
 	var views []PodcastView
 	for _, p := range podcasts {

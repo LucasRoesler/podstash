@@ -174,6 +174,12 @@ func pollOnce(app *App) {
 		}
 	}
 
+	// Reconcile after marking, so an entry for a podcast deleted during the
+	// loop above does not survive until the next poll. Doing it here rather
+	// than only when the home page renders means a headless install, serving
+	// nothing but feed.xml to a podcast client, still bounds the map.
+	app.Heartbeat.RetainPodcasts(podcasts)
+
 	slog.Info("poll: downloading pending episodes")
 	if err := DownloadPending(app.Client, app.DataDir, app.DownloadWorkers); err != nil {
 		slog.Error("poll: download failed", "error", err)
