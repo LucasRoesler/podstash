@@ -464,22 +464,20 @@ func (app *App) handleOPMLExport(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
+// handleHealthz reports whether the data directory is still reachable.
+//
+// This is a stat, not a write. Writability is checked once at startup by
+// CheckDataDirWritable: it is a property of the mount, so re-checking it per
+// request only re-answered a settled question, and the probe file's create and
+// unlink dirtied the library directory on every healthcheck poll, keeping
+// spinning disks awake. See issue #8.
 func (app *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	dir := filepath.Join(app.DataDir, podcastsDir)
 
-	// Verify read access.
 	if _, err := os.Stat(dir); err != nil {
 		http.Error(w, fmt.Sprintf("data dir not readable: %v", err), http.StatusServiceUnavailable)
 		return
 	}
-
-	// Verify write access.
-	probe := filepath.Join(dir, ".healthcheck")
-	if err := os.WriteFile(probe, nil, 0644); err != nil {
-		http.Error(w, fmt.Sprintf("data dir not writable: %v", err), http.StatusServiceUnavailable)
-		return
-	}
-	os.Remove(probe)
 
 	w.Header().Set("Content-Type", "application/json")
 	// Ignore error — response already committed, nothing useful to do on write failure.

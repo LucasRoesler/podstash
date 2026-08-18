@@ -31,6 +31,13 @@ func Run(cfg Config) {
 		os.Exit(1)
 	}
 
+	// MkdirAll succeeds on an existing directory whatever its permissions, so
+	// probe for writability explicitly rather than discovering it on first save.
+	if err := CheckDataDirWritable(cfg.DataDir); err != nil {
+		slog.Error("data dir check failed", "data", cfg.DataDir, "error", err)
+		os.Exit(1)
+	}
+
 	app := &App{
 		DataDir:         cfg.DataDir,
 		Client:          &http.Client{Timeout: cfg.HTTPTimeout},

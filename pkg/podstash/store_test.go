@@ -319,3 +319,91 @@ func TestListPodcastsMissingDir(t *testing.T) {
 		t.Errorf("expected 0 podcasts, got %d", len(podcasts))
 	}
 }
+
+// Regression test for issue #8: rewriting an unchanged index every poll kept
+// spinning disks awake. An identical payload must leave the file untouched.
+func TestAtomicWriteJSONSkipsIdenticalContent(t *testing.T) {
+	dir := t.TempDir()
+	idx := &EpisodeIndex{Episodes: []EpisodeEntry{{GUID: "a", Title: "Episode A"}}}
+
+	if err := SaveIndex(dir, idx); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+
+	path := filepath.Join(dir, indexFilename)
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat index: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	if err := SaveIndex(dir, idx); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat index: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("index mtime changed on identical write: %v -> %v",
+			before.ModTime(), after.ModTime())
+	}
+}
+
+func TestAtomicWriteJSONWritesChangedContent(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := SaveIndex(dir, &EpisodeIndex{Episodes: []EpisodeEntry{{GUID: "a"}}}); err != nil {
+		t.Fatalf("first save: %v", err)
+	}
+	if err := SaveIndex(dir, &EpisodeIndex{Episodes: []EpisodeEntry{{GUID: "a"}, {GUID: "b"}}}); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+
+	got, err := LoadIndex(dir)
+	if err != nil {
+		t.Fatalf("load index: %v", err)
+	}
+	if len(got.Episodes) != 2 {
+		t.Errorf("episodes = %d, want 2", len(got.Episodes))
+	}
+}
+
+func TestCheckDataDirWritable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, podcastsDir), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	if err := CheckDataDirWritable(dir); err != nil {
+		t.Errorf("CheckDataDirWritable() = %v, want nil", err)
+	}
+
+	// The probe must not be left behind.
+	probe := filepath.Join(dir, podcastsDir, ".healthcheck")
+	if _, err := os.Stat(probe); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("probe file still present: %v", err)
+	}
+}
+
+func TestCheckDataDirWritableReadOnly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits are not enforced")
+	}
+
+	dir := t.TempDir()
+	podcasts := filepath.Join(dir, podcastsDir)
+	if err := os.MkdirAll(podcasts, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(podcasts, 0555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(podcasts, 0755) })
+
+	if err := CheckDataDirWritable(dir); err == nil {
+		t.Error("CheckDataDirWritable() = nil, want error for read-only dir")
+	}
+}

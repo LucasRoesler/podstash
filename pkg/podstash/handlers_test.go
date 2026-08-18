@@ -731,3 +731,64 @@ func TestHandleHealthzMissingDir(t *testing.T) {
 		t.Errorf("status = %d, want 503", w.Code)
 	}
 }
+
+// Regression test for issue #8: the healthcheck must not write to the data
+// directory. A probe file's create and unlink bump the directory mtime, forcing
+// a journal commit that keeps spinning disks awake between polls.
+func TestHandleHealthzDoesNotWriteToDataDir(t *testing.T) {
+	app, dir := testApp(t)
+	podcasts := filepath.Join(dir, podcastsDir)
+
+	before, err := os.Stat(podcasts)
+	if err != nil {
+		t.Fatalf("stat podcasts dir: %v", err)
+	}
+
+	// Filesystem mtime granularity can be coarse; sleep past it so a write
+	// during the request would be visible as a changed mtime.
+	time.Sleep(10 * time.Millisecond)
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	app.handleHealthz(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	after, err := os.Stat(podcasts)
+	if err != nil {
+		t.Fatalf("stat podcasts dir: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("podcasts dir mtime changed: %v -> %v, healthcheck must not write",
+			before.ModTime(), after.ModTime())
+	}
+}
+
+func TestHandleHealthzReadOnlyDataDir(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits are not enforced")
+	}
+
+	dir := t.TempDir()
+	podcasts := filepath.Join(dir, podcastsDir)
+	if err := os.MkdirAll(podcasts, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.Chmod(podcasts, 0555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(podcasts, 0755) })
+
+	app := &App{DataDir: dir, Tmpl: loadTemplates()}
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	app.handleHealthz(w, req)
+
+	// Writability is a startup concern; a readable directory stays healthy.
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", w.Code)
+	}
+}
