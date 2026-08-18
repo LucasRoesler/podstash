@@ -739,13 +739,29 @@ func TestHandleHealthzDoesNotWriteToDataDir(t *testing.T) {
 	app, dir := testApp(t)
 	podcasts := filepath.Join(dir, podcastsDir)
 
-	before, err := os.Stat(podcasts)
+	// Seed a file so the assertion also catches a handler that rewrites an
+	// existing path: that leaves the directory mtime alone but changes the
+	// file's identity.
+	seeded := filepath.Join(podcasts, "seed.json")
+	if err := os.WriteFile(seeded, []byte("{}\n"), 0644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	seedBefore := fileIdentity(t, seeded)
+
+	before, err := os.ReadDir(podcasts)
+	if err != nil {
+		t.Fatalf("read podcasts dir: %v", err)
+	}
+
+	// Directory mtime is the only signal that catches a probe file created and
+	// unlinked inside the handler: the listing looks identical afterwards, yet
+	// each entry change bumps the mtime and forces a journal commit, which is
+	// the behaviour issue #8 reported. The sleep clears the filesystem's
+	// timestamp granularity so that bump is visible.
+	dirBefore, err := os.Stat(podcasts)
 	if err != nil {
 		t.Fatalf("stat podcasts dir: %v", err)
 	}
-
-	// Filesystem mtime granularity can be coarse; sleep past it so a write
-	// during the request would be visible as a changed mtime.
 	time.Sleep(10 * time.Millisecond)
 
 	req := httptest.NewRequest("GET", "/healthz", nil)
@@ -756,13 +772,26 @@ func TestHandleHealthzDoesNotWriteToDataDir(t *testing.T) {
 		t.Fatalf("status = %d, want 200", w.Code)
 	}
 
-	after, err := os.Stat(podcasts)
+	after, err := os.ReadDir(podcasts)
+	if err != nil {
+		t.Fatalf("read podcasts dir: %v", err)
+	}
+	if len(after) != len(before) {
+		t.Errorf("podcasts dir entries changed: %d -> %d, healthcheck must not write",
+			len(before), len(after))
+	}
+	if seedAfter := fileIdentity(t, seeded); seedAfter != seedBefore {
+		t.Errorf("existing file rewritten: inode %d -> %d, healthcheck must not write",
+			seedBefore, seedAfter)
+	}
+
+	dirAfter, err := os.Stat(podcasts)
 	if err != nil {
 		t.Fatalf("stat podcasts dir: %v", err)
 	}
-	if !after.ModTime().Equal(before.ModTime()) {
+	if !dirAfter.ModTime().Equal(dirBefore.ModTime()) {
 		t.Errorf("podcasts dir mtime changed: %v -> %v, healthcheck must not write",
-			before.ModTime(), after.ModTime())
+			dirBefore.ModTime(), dirAfter.ModTime())
 	}
 }
 
@@ -771,16 +800,7 @@ func TestHandleHealthzReadOnlyDataDir(t *testing.T) {
 		t.Skip("running as root: permission bits are not enforced")
 	}
 
-	dir := t.TempDir()
-	podcasts := filepath.Join(dir, podcastsDir)
-	if err := os.MkdirAll(podcasts, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.Chmod(podcasts, 0555); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(podcasts, 0755) })
-
+	dir := readOnlyPodcastsDir(t)
 	app := &App{DataDir: dir, Tmpl: loadTemplates()}
 
 	req := httptest.NewRequest("GET", "/healthz", nil)

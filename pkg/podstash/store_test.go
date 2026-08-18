@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -322,6 +323,23 @@ func TestListPodcastsMissingDir(t *testing.T) {
 
 // Regression test for issue #8: rewriting an unchanged index every poll kept
 // spinning disks awake. An identical payload must leave the file untouched.
+// fileIdentity returns the inode of path. atomicWriteJSON writes a temp file and
+// renames it over the target, so a write always changes the inode. Comparing
+// identity detects a write exactly, where comparing mtime depends on the
+// filesystem's timestamp granularity.
+func fileIdentity(t *testing.T, path string) uint64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	st, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Skipf("inode unavailable on this platform for %s", path)
+	}
+	return st.Ino
+}
+
 func TestAtomicWriteJSONSkipsIdenticalContent(t *testing.T) {
 	dir := t.TempDir()
 	idx := &EpisodeIndex{Episodes: []EpisodeEntry{{GUID: "a", Title: "Episode A"}}}
@@ -331,24 +349,14 @@ func TestAtomicWriteJSONSkipsIdenticalContent(t *testing.T) {
 	}
 
 	path := filepath.Join(dir, indexFilename)
-	before, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat index: %v", err)
-	}
-
-	time.Sleep(10 * time.Millisecond)
+	before := fileIdentity(t, path)
 
 	if err := SaveIndex(dir, idx); err != nil {
 		t.Fatalf("second save: %v", err)
 	}
 
-	after, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat index: %v", err)
-	}
-	if !after.ModTime().Equal(before.ModTime()) {
-		t.Errorf("index mtime changed on identical write: %v -> %v",
-			before.ModTime(), after.ModTime())
+	if after := fileIdentity(t, path); after != before {
+		t.Errorf("index rewritten on identical save: inode %d -> %d", before, after)
 	}
 }
 
@@ -396,15 +404,7 @@ func TestCheckDataDirWritableReadOnly(t *testing.T) {
 		t.Skip("running as root: permission bits are not enforced")
 	}
 
-	dir := t.TempDir()
-	podcasts := filepath.Join(dir, podcastsDir)
-	if err := os.MkdirAll(podcasts, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.Chmod(podcasts, 0555); err != nil {
-		t.Fatalf("chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(podcasts, 0755) })
+	dir := readOnlyPodcastsDir(t)
 
 	if err := CheckDataDirWritable(dir); err == nil {
 		t.Error("CheckDataDirWritable() = nil, want error for read-only dir")
@@ -425,7 +425,7 @@ func TestCheckDataDirWritableIgnoresStaleProbe(t *testing.T) {
 		{
 			name: "unreadable leftover file",
 			setup: func(t *testing.T, podcasts string) {
-				if err := os.WriteFile(filepath.Join(podcasts, legacyHealthcheckFilename), nil, 0400); err != nil {
+				if err := os.WriteFile(filepath.Join(podcasts, ".healthcheck"), nil, 0400); err != nil {
 					t.Fatalf("write stale probe: %v", err)
 				}
 			},
@@ -433,7 +433,7 @@ func TestCheckDataDirWritableIgnoresStaleProbe(t *testing.T) {
 		{
 			name: "leftover path is a directory",
 			setup: func(t *testing.T, podcasts string) {
-				if err := os.MkdirAll(filepath.Join(podcasts, legacyHealthcheckFilename), 0755); err != nil {
+				if err := os.MkdirAll(filepath.Join(podcasts, ".healthcheck"), 0755); err != nil {
 					t.Fatalf("mkdir stale probe: %v", err)
 				}
 			},
@@ -456,23 +456,19 @@ func TestCheckDataDirWritableIgnoresStaleProbe(t *testing.T) {
 	}
 }
 
-func TestRemoveLegacyHealthcheckProbe(t *testing.T) {
+// readOnlyPodcastsDir returns a data dir whose podcasts/ subdirectory rejects
+// writes. The cleanup chmod is load-bearing: without it t.TempDir's RemoveAll
+// cannot unlink the directory's contents and fails the test.
+func readOnlyPodcastsDir(t *testing.T) string {
+	t.Helper()
 	dir := t.TempDir()
 	podcasts := filepath.Join(dir, podcastsDir)
 	if err := os.MkdirAll(podcasts, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	probe := filepath.Join(podcasts, legacyHealthcheckFilename)
-	if err := os.WriteFile(probe, nil, 0644); err != nil {
-		t.Fatalf("write probe: %v", err)
+	if err := os.Chmod(podcasts, 0555); err != nil {
+		t.Fatalf("chmod: %v", err)
 	}
-
-	removeLegacyHealthcheckProbe(dir)
-
-	if _, err := os.Stat(probe); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("legacy probe still present: %v", err)
-	}
-
-	// Absent probe is the normal case and must not panic or complain.
-	removeLegacyHealthcheckProbe(dir)
+	t.Cleanup(func() { _ = os.Chmod(podcasts, 0755) })
+	return dir
 }

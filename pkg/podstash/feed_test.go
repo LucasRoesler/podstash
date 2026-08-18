@@ -577,12 +577,7 @@ func TestRefreshPodcastUnchangedFeedLeavesIndexUntouched(t *testing.T) {
 	}
 
 	indexPath := filepath.Join(dir, indexFilename)
-	before, err := os.Stat(indexPath)
-	if err != nil {
-		t.Fatalf("stat index: %v", err)
-	}
-
-	time.Sleep(10 * time.Millisecond)
+	before := fileIdentity(t, indexPath)
 
 	added, err := RefreshPodcast(srv.Client(), dataDir, slug)
 	if err != nil {
@@ -592,12 +587,7 @@ func TestRefreshPodcastUnchangedFeedLeavesIndexUntouched(t *testing.T) {
 		t.Fatalf("added = %d, want 0", added)
 	}
 
-	after, err := os.Stat(indexPath)
-	if err != nil {
-		t.Fatalf("stat index: %v", err)
-	}
-	if !after.ModTime().Equal(before.ModTime()) {
-		t.Errorf("index mtime changed on unchanged refresh: %v -> %v",
-			before.ModTime(), after.ModTime())
+	if after := fileIdentity(t, indexPath); after != before {
+		t.Errorf("index rewritten on unchanged refresh: inode %d -> %d", before, after)
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -21,12 +20,8 @@ import (
 const (
 	metaFilename  = ".podstash.meta.json"
 	indexFilename = ".podstash.index.json"
-
-	// legacyHealthcheckFilename is the probe written by pre-issue-#8 versions
-	// on every /healthz request; removed at startup, never written.
-	legacyHealthcheckFilename = ".healthcheck"
-	podcastsDir               = "podcasts"
-	maxSlugLen                = 80
+	podcastsDir   = "podcasts"
+	maxSlugLen    = 80
 )
 
 var multiHyphenRe = regexp.MustCompile(`-{2,}`)
@@ -278,14 +273,4 @@ func atomicWriteJSON(path string, v any) error {
 		return fmt.Errorf("rename temp file: %w", err)
 	}
 	return nil
-}
-
-// removeLegacyHealthcheckProbe deletes the .healthcheck file that versions
-// before the issue #8 fix wrote on every /healthz request. Best effort: the
-// file is inert, so a failure to remove it must not stop startup.
-func removeLegacyHealthcheckProbe(dataDir string) {
-	path := filepath.Join(dataDir, podcastsDir, legacyHealthcheckFilename)
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		slog.Warn("could not remove legacy healthcheck probe", "path", path, "error", err)
-	}
 }
