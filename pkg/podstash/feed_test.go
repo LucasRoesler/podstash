@@ -546,3 +546,58 @@ func TestRefreshPodcastDownloadAfter(t *testing.T) {
 		t.Errorf("pending %d, want 1", pending)
 	}
 }
+
+// Regression test for issue #8: refreshing an unchanged feed rewrote the full
+// index every poll (3.7 MB per poll for a 6-feed library), which on a spinning
+// disk prevented spindown. A refresh that adds nothing must leave the index
+// file untouched.
+func TestRefreshPodcastUnchangedFeedLeavesIndexUntouched(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "unchanged-feed"
+	dir := PodcastDir(dataDir, slug)
+	os.MkdirAll(dir, 0755)
+
+	meta := &PodcastMeta{FeedURL: srv.URL, Title: "Unchanged Feed", AddedAt: time.Now().UTC()}
+	if err := SaveMeta(dir, meta); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	indexPath := filepath.Join(dir, indexFilename)
+	before, err := os.Stat(indexPath)
+	if err != nil {
+		t.Fatalf("stat index: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+
+	added, err := RefreshPodcast(srv.Client(), dataDir, slug)
+	if err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+	if added != 0 {
+		t.Fatalf("added = %d, want 0", added)
+	}
+
+	after, err := os.Stat(indexPath)
+	if err != nil {
+		t.Fatalf("stat index: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("index mtime changed on unchanged refresh: %v -> %v",
+			before.ModTime(), after.ModTime())
+	}
+}

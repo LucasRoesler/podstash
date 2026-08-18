@@ -1,6 +1,7 @@
 package podstash
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -222,13 +223,37 @@ func ValidSlug(slug string) bool {
 	return !strings.ContainsAny(slug, "/\\")
 }
 
+// CheckDataDirWritable verifies the data directory accepts writes, by creating
+// and removing a probe file. Called once at startup: a data directory that is
+// missing or read-only is a misconfigured mount, and failing immediately beats
+// surfacing it later as a failed download.
+func CheckDataDirWritable(dataDir string) error {
+	probe := filepath.Join(dataDir, podcastsDir, ".healthcheck")
+	if err := os.WriteFile(probe, nil, 0644); err != nil {
+		return fmt.Errorf("data dir not writable: %w", err)
+	}
+	if err := os.Remove(probe); err != nil {
+		return fmt.Errorf("remove write probe: %w", err)
+	}
+	return nil
+}
+
 // atomicWriteJSON marshals v to JSON and writes it atomically to path.
+//
+// The write is skipped when the file already holds identical bytes. Every write
+// dirties the containing directory and forces a filesystem journal commit, which
+// on spinning disks keeps the drive awake; most polls change nothing, so
+// comparing first lets an idle library disk spin down. See issue #8.
 func atomicWriteJSON(path string, v any) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal json: %w", err)
 	}
 	data = append(data, '\n')
+
+	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, data) {
+		return nil
+	}
 
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0644); err != nil {
