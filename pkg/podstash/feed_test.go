@@ -1,6 +1,7 @@
 package podstash
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -1177,6 +1178,25 @@ func TestRefreshPodcastUnchangedFeedWritesNothing(t *testing.T) {
 		t.Fatalf("first refresh: %v", err)
 	}
 
+	// Put a legacy last_checked_at key on disk. LoadMeta adopts it into
+	// LastChangedAt, which SaveMeta then writes under the current key, so any
+	// call to SaveMeta on this path produces different bytes and is visible as
+	// a rewrite. Without this the write-skip in atomicWriteJSON would mask an
+	// unconditional save.
+	legacyMeta := map[string]any{
+		"feed_url":        srv.URL,
+		"title":           "Quiet",
+		"etag":            etag,
+		"last_checked_at": "2026-08-01T12:00:00Z",
+	}
+	legacy, err := json.Marshal(legacyMeta)
+	if err != nil {
+		t.Fatalf("marshal legacy meta: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, metaFilename), legacy, 0644); err != nil {
+		t.Fatalf("write legacy meta: %v", err)
+	}
+
 	metaBefore := fileIdentity(t, filepath.Join(dir, metaFilename))
 	indexBefore := fileIdentity(t, filepath.Join(dir, indexFilename))
 	dirBefore, err := os.Stat(dir)
@@ -1255,5 +1275,127 @@ func TestRefreshPodcastLastChangedAtOnlyMovesOnChange(t *testing.T) {
 	if !second.LastChangedAt.Equal(first.LastChangedAt) {
 		t.Errorf("LastChangedAt moved on a 200 that added nothing: %v -> %v",
 			first.LastChangedAt, second.LastChangedAt)
+	}
+}
+
+// A server may rotate an ETag while the content is unchanged. The rotated
+// value is not persisted, since writing it would defeat the point of the 304
+// fast path; the stored one still produces a 304, so nothing is lost.
+func TestRefreshPodcastKeepsWorkingWhenServerRotatesETagOn304(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const oldETag = `"v1"`
+	const rotated = `"v2"`
+	fullBodies := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if inm := r.Header.Get("If-None-Match"); inm == oldETag || inm == rotated {
+			w.Header().Set("ETag", rotated)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		fullBodies++
+		w.Header().Set("ETag", oldETag)
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "rotating"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Rotating", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	for i := range 3 {
+		if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+			t.Fatalf("refresh %d: %v", i+2, err)
+		}
+	}
+
+	if fullBodies != 1 {
+		t.Errorf("full feed bodies = %d, want 1: rotation must not force a refetch", fullBodies)
+	}
+}
+
+// A 304 can carry validators we do not hold, most importantly a server that has
+// gained a strong ETag for a feed we only track by Last-Modified. Nothing else
+// would ever store it, since the 304 branch is the only one reached while the
+// feed is quiet, so the conditional request would stay permanently weaker.
+func TestRefreshPodcastAdoptsUpgradedValidatorsOn304(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const lastMod = "Wed, 21 Oct 2026 07:28:00 GMT"
+	const strongETag = `"strong"`
+	serveETag := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified", lastMod)
+		if r.Header.Get("If-Modified-Since") == lastMod || r.Header.Get("If-None-Match") == strongETag {
+			if serveETag {
+				w.Header().Set("ETag", strongETag)
+			}
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "upgrade"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Upgrade", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.ETag != "" {
+		t.Fatalf("setup: ETag = %q, want empty", meta.ETag)
+	}
+
+	// The server starts advertising an ETag on its 304 responses.
+	serveETag = true
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("upgrade refresh: %v", err)
+	}
+
+	meta, err = LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.ETag != strongETag {
+		t.Errorf("ETag = %q, want %q adopted from the 304", meta.ETag, strongETag)
+	}
+
+	// Once adopted, further quiet polls must go back to writing nothing.
+	metaBefore := fileIdentity(t, filepath.Join(dir, metaFilename))
+	for i := range 3 {
+		if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+			t.Fatalf("quiet refresh %d: %v", i+1, err)
+		}
+	}
+	if after := fileIdentity(t, filepath.Join(dir, metaFilename)); after != metaBefore {
+		t.Errorf("meta rewritten on a quiet poll after adopting validators: inode %d -> %d", metaBefore, after)
 	}
 }

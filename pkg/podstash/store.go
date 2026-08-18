@@ -113,9 +113,11 @@ func LoadMeta(dir string) (*PodcastMeta, error) {
 		var legacy struct {
 			LastCheckedAt time.Time `json:"last_checked_at"`
 		}
-		if err := json.Unmarshal(data, &legacy); err == nil {
-			meta.LastChangedAt = legacy.LastCheckedAt
-		}
+		// The outer Unmarshal already accepted this document, so a failure here
+		// only means the legacy key is absent or malformed, which leaves
+		// LastCheckedAt at the zero value we would fall back to anyway.
+		_ = json.Unmarshal(data, &legacy)
+		meta.LastChangedAt = legacy.LastCheckedAt
 	}
 
 	meta.Slug = filepath.Base(dir)

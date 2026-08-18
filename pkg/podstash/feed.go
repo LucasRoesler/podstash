@@ -414,11 +414,23 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 
 	feed, validators, err := FetchFeedConditional(client, meta.FeedURL, prev)
 	if errors.Is(err, ErrFeedNotModified) {
-		// Nothing changed, so nothing is written: the index is untouched, and
-		// the validators on disk are by definition the ones that just produced
-		// this 304. Writing meta here purely to record the poll time is what
-		// kept spinning disks awake (issue #8); the poll time lives in
-		// PollHeartbeat instead.
+		// The feed is unchanged, so the index is left alone and the poll time
+		// is not recorded here: writing meta on every poll is what kept
+		// spinning disks awake (issue #8), and PollHeartbeat holds it instead.
+		//
+		// Validators are the exception. A 304 can carry ones we do not hold,
+		// most importantly a server that has gained a strong ETag for a feed
+		// we only track by Last-Modified. Nothing else would ever store it,
+		// since this branch is the only one reached while the feed is quiet,
+		// so the conditional request would stay permanently weaker. Saving
+		// only on a difference keeps the quiet path write-free.
+		if validators.ETag != meta.ETag || validators.LastModified != meta.LastModified {
+			meta.ETag = validators.ETag
+			meta.LastModified = validators.LastModified
+			if err := SaveMeta(dir, meta); err != nil {
+				return 0, fmt.Errorf("refresh %s: %w", slug, err)
+			}
+		}
 		return 0, nil
 	}
 	if err != nil {
