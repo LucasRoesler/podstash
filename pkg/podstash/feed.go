@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"slices"
@@ -45,6 +46,33 @@ type FeedValidators struct {
 // ETag is a hash, Last-Modified a fixed-width date), but response headers may
 // be far larger, and these are persisted to disk and resent on every poll.
 const maxValidatorLen = 512
+
+// usableLastModified drops a Last-Modified we must not send back.
+//
+// A future date is the dangerous one: an origin that honours If-Modified-Since
+// answers 304 for everything until that date arrives, so a feed stamped years
+// ahead by a skewed clock would stop delivering episodes with no way back.
+// Dropping it costs one unconditional fetch per poll for that feed.
+func usableLastModified(v, url string) string {
+	v = boundedValidator(v)
+	if v == "" {
+		return ""
+	}
+	t, err := http.ParseTime(v)
+	if err != nil {
+		// Unparseable to us, but the origin may still recognise the exact
+		// bytes it sent, so keep it.
+		return v
+	}
+	if t.After(time.Now()) {
+		// Dropping it costs a full fetch every poll for this feed, so say so:
+		// a stuck clock would otherwise degrade quietly and forever.
+		slog.Warn("ignoring future Last-Modified from feed server",
+			"last_modified", v, "url", url)
+		return ""
+	}
+	return v
+}
 
 // boundedValidator drops a validator too long to be genuine. Dropping one costs
 // a full fetch on the next poll, which is what would happen without it anyway.
@@ -189,7 +217,7 @@ func FetchFeedConditional(client HTTPClient, url string, prev FeedValidators) (*
 
 	next := FeedValidators{
 		ETag:         boundedValidator(resp.Header.Get("ETag")),
-		LastModified: boundedValidator(resp.Header.Get("Last-Modified")),
+		LastModified: usableLastModified(resp.Header.Get("Last-Modified"), url),
 	}
 
 	if resp.StatusCode == http.StatusNotModified {
@@ -372,6 +400,17 @@ func ForceRefreshPodcast(client HTTPClient, dataDir string, slug string) (int, e
 	return refreshPodcast(client, dataDir, slug, true)
 }
 
+// gainedValidator reports whether a 304 response offers a validator the stored
+// metadata lacks entirely. Only that is worth a write: it makes future
+// conditional requests stronger, where swapping one working validator for
+// another does not.
+func gainedValidator(meta *PodcastMeta, next FeedValidators) bool {
+	if meta.ETag == "" && next.ETag != "" {
+		return true
+	}
+	return meta.LastModified == "" && next.LastModified != ""
+}
+
 // RefreshPodcast fetches the RSS feed for a podcast and adds any new episodes
 // to the index. Returns the number of new episodes added.
 //
@@ -384,9 +423,7 @@ func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error)
 
 func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) (int, error) {
 	dir := PodcastDir(dataDir, slug)
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {
@@ -414,14 +451,33 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 
 	feed, validators, err := FetchFeedConditional(client, meta.FeedURL, prev)
 	if errors.Is(err, ErrFeedNotModified) {
-		// The feed is unchanged and the index is present, so neither can have
-		// changed: skip loading and rewriting the index. Meta is still saved so
-		// LastCheckedAt reflects the poll.
-		meta.LastCheckedAt = time.Now().UTC()
-		meta.ETag = validators.ETag
-		meta.LastModified = validators.LastModified
-		if err := SaveMeta(dir, meta); err != nil {
-			return 0, fmt.Errorf("refresh %s: %w", slug, err)
+		// The feed is unchanged, so the index is left alone and the poll time
+		// goes to PollHeartbeat, which documents why it is not written here.
+		//
+		// Validators are the exception, but only when the 304 offers a kind we
+		// do not have at all: a server that has gained a strong ETag for a
+		// feed we track only by Last-Modified would otherwise never have it
+		// stored, since this branch is the only one reached while the feed is
+		// quiet, leaving the conditional request permanently weaker.
+		//
+		// A validator whose value merely changed is ignored. The stored one
+		// just earned this 304, so replacing it buys nothing, and origins
+		// behind a CDN commonly answer from different edges that stamp
+		// different ETags for the same content: writing on every value change
+		// would rewrite meta on every poll, which is the behaviour this whole
+		// path exists to avoid. Ignoring it is safe because a validator the
+		// server genuinely stops honouring produces a 200, and that path
+		// replaces both fields wholesale.
+		if gainedValidator(meta, validators) {
+			if meta.ETag == "" {
+				meta.ETag = validators.ETag
+			}
+			if meta.LastModified == "" {
+				meta.LastModified = validators.LastModified
+			}
+			if err := SaveMeta(dir, meta); err != nil {
+				return 0, fmt.Errorf("refresh %s: %w", slug, err)
+			}
 		}
 		return 0, nil
 	}
@@ -440,7 +496,6 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 	if img := feed.Channel.ImageURL(); img != "" {
 		meta.ImageURL = img
 	}
-	meta.LastCheckedAt = time.Now().UTC()
 	meta.ETag = validators.ETag
 	meta.LastModified = validators.LastModified
 
@@ -488,6 +543,12 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 		added++
 	}
 
+	if added > 0 {
+		meta.LastChangedAt = time.Now().UTC()
+	}
+
+	// Both saves skip the write when the bytes are unchanged, so a 200 that
+	// turns out to carry nothing new still touches no disk.
 	if err := SaveMeta(dir, meta); err != nil {
 		return added, fmt.Errorf("refresh %s: %w", slug, err)
 	}

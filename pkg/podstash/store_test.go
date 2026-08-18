@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -74,7 +75,7 @@ func TestSaveAndLoadMeta(t *testing.T) {
 		Description:   "A test podcast.",
 		ImageURL:      "https://example.com/image.jpg",
 		AddedAt:       now,
-		LastCheckedAt: now,
+		LastChangedAt: now,
 		Paused:        false,
 	}
 
@@ -483,7 +484,7 @@ func TestSaveAndLoadMetaValidators(t *testing.T) {
 		Title:        "Validators",
 		AddedAt:      time.Now().Truncate(time.Second),
 		ETag:         `W/"694005d4b2cf6d966ab8b63d882c2959"`,
-		LastModified: "Thu, 13 Aug 2026 20:41:57 GMT",
+		LastModified: "Wed, 13 Aug 2025 20:41:57 GMT",
 	}
 
 	if err := SaveMeta(dir, original); err != nil {
@@ -519,4 +520,257 @@ func TestSaveMetaOmitsEmptyValidators(t *testing.T) {
 			t.Errorf("meta contains %q key when validator is empty:\n%s", key, data)
 		}
 	}
+}
+
+// Meta written before the LastChangedAt rename carries last_checked_at. It is
+// the closest thing to a change time those files have, so it must be adopted
+// rather than leaving the field zero and showing nothing in the UI.
+func TestLoadMetaAdoptsLegacyLastCheckedAt(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{
+  "feed_url": "https://example.com/feed.xml",
+  "title": "Legacy",
+  "last_checked_at": "2026-08-01T12:00:00Z"
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, metaFilename), []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy meta: %v", err)
+	}
+
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+
+	want := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	if !meta.LastChangedAt.Equal(want) {
+		t.Errorf("LastChangedAt = %v, want %v adopted from last_checked_at", meta.LastChangedAt, want)
+	}
+}
+
+// A file carrying both keys must prefer the current one.
+func TestLoadMetaPrefersLastChangedAtOverLegacy(t *testing.T) {
+	dir := t.TempDir()
+	both := `{
+  "feed_url": "https://example.com/feed.xml",
+  "title": "Both",
+  "last_checked_at": "2026-08-01T12:00:00Z",
+  "last_changed_at": "2026-08-15T09:30:00Z"
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, metaFilename), []byte(both), 0644); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+
+	want := time.Date(2026, 8, 15, 9, 30, 0, 0, time.UTC)
+	if !meta.LastChangedAt.Equal(want) {
+		t.Errorf("LastChangedAt = %v, want %v", meta.LastChangedAt, want)
+	}
+}
+
+func TestSaveAndLoadMetaLastChangedAt(t *testing.T) {
+	dir := t.TempDir()
+	want := time.Now().UTC().Truncate(time.Second)
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/f.xml", Title: "T", LastChangedAt: want}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if !meta.LastChangedAt.Equal(want) {
+		t.Errorf("LastChangedAt = %v, want %v", meta.LastChangedAt, want)
+	}
+}
+
+// waitForPodcastLockCount waits for the lock map to reach want. Handlers can
+// leave a detached goroutine holding a lock (handleRefreshPodcast spawns one),
+// so asserting the count directly would depend on that goroutine having
+// happened to finish rather than on any synchronisation.
+func waitForPodcastLockCount(t *testing.T, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := podcastLockCount()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lock count = %d, want %d after 2s", got, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// The lock map must not grow for the life of the process: a podcast that is
+// deleted, or simply never touched again, should leave nothing behind.
+func TestLockPodcastReleasesItsEntry(t *testing.T) {
+	before := podcastLockCount()
+
+	unlock := lockPodcast("transient")
+	if got := podcastLockCount(); got != before+1 {
+		t.Errorf("lock count while held = %d, want %d", got, before+1)
+	}
+	unlock()
+
+	if got := podcastLockCount(); got != before {
+		t.Errorf("lock count after release = %d, want %d", got, before)
+	}
+}
+
+func TestLockPodcastExcludesConcurrentHolders(t *testing.T) {
+	const goroutines = 8
+	const increments = 200
+
+	counter := 0
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Go(func() {
+			for range increments {
+				unlock := lockPodcast("contended")
+				counter++
+				unlock()
+			}
+		})
+	}
+	wg.Wait()
+
+	if want := goroutines * increments; counter != want {
+		t.Errorf("counter = %d, want %d: mutual exclusion was lost", counter, want)
+	}
+	if got := podcastLockCount(); got != 0 {
+		t.Errorf("lock count after contention = %d, want 0", got)
+	}
+}
+
+// The reference count is what makes removal safe. A naive delete would let one
+// goroutine hold an orphaned mutex while the next created a fresh one, so both
+// would proceed at once; this drives that interleaving hard.
+func TestLockPodcastKeepsExclusionAcrossEntryChurn(t *testing.T) {
+	var wg sync.WaitGroup
+	inside := 0
+	var guard sync.Mutex
+	overlaps := 0
+
+	for range 16 {
+		wg.Go(func() {
+			for range 100 {
+				unlock := lockPodcast("churn")
+
+				guard.Lock()
+				inside++
+				if inside > 1 {
+					overlaps++
+				}
+				guard.Unlock()
+
+				guard.Lock()
+				inside--
+				guard.Unlock()
+
+				unlock()
+			}
+		})
+	}
+	wg.Wait()
+
+	if overlaps != 0 {
+		t.Errorf("%d overlapping critical sections: exclusion lost across entry churn", overlaps)
+	}
+	if got := podcastLockCount(); got != 0 {
+		t.Errorf("lock count = %d, want 0 after all holders released", got)
+	}
+}
+
+// A panicking caller must still release its lock and leave the map consistent,
+// or one bad request would wedge that podcast for the life of the process.
+func TestLockPodcastReleasesOnPanic(t *testing.T) {
+	before := podcastLockCount()
+
+	func() {
+		defer func() { _ = recover() }()
+		defer lockPodcast("panicky")()
+		panic("boom")
+	}()
+
+	if got := podcastLockCount(); got != before {
+		t.Fatalf("lock count after a panic = %d, want %d", got, before)
+	}
+
+	// And the podcast is still lockable.
+	unlock := lockPodcast("panicky")
+	unlock()
+}
+
+// An entry must not be dropped while goroutines are still blocked acquiring it.
+func TestLockPodcastKeepsEntryWhileWaitersBlock(t *testing.T) {
+	unlock := lockPodcast("blocked")
+
+	var wg sync.WaitGroup
+	started := make(chan struct{}, 8)
+	for range 8 {
+		wg.Go(func() {
+			started <- struct{}{}
+			lockPodcast("blocked")()
+		})
+	}
+	for range 8 {
+		<-started
+	}
+
+	if got := podcastLockCount(); got != 1 {
+		t.Errorf("lock count with waiters blocked = %d, want 1", got)
+	}
+
+	unlock()
+	wg.Wait()
+
+	if got := podcastLockCount(); got != 0 {
+		t.Errorf("lock count after every waiter released = %d, want 0", got)
+	}
+}
+
+// Calling the unlock function twice must not release a lock another goroutine
+// now holds. sync.Mutex tracks no ownership, so an unguarded second call would
+// let a third caller into the critical section alongside the holder.
+func TestLockPodcastUnlockIsIdempotent(t *testing.T) {
+	unlock := lockPodcast("idempotent")
+
+	held := make(chan struct{})
+	releaseHolder := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		defer lockPodcast("idempotent")()
+		close(held)
+		<-releaseHolder
+	})
+
+	unlock()
+	<-held
+	// The second goroutine is inside the critical section; a stray second call
+	// must not hand its lock to anyone else.
+	unlock()
+
+	entered := make(chan struct{})
+	go func() {
+		defer lockPodcast("idempotent")()
+		close(entered)
+	}()
+
+	select {
+	case <-entered:
+		t.Error("a third caller entered while the lock was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseHolder)
+	wg.Wait()
+	<-entered
+	waitForPodcastLockCount(t, 0)
 }

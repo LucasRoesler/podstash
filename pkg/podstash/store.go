@@ -28,14 +28,19 @@ var multiHyphenRe = regexp.MustCompile(`-{2,}`)
 
 // PodcastMeta holds podcast-level metadata, stored in .podstash.meta.json.
 type PodcastMeta struct {
-	FeedURL       string    `json:"feed_url"`
-	Title         string    `json:"title"`
-	Author        string    `json:"author"`
-	Description   string    `json:"description"`
-	ImageURL      string    `json:"image_url"`
-	AddedAt       time.Time `json:"added_at"`
-	LastCheckedAt time.Time `json:"last_checked_at"`
-	Paused        bool      `json:"paused"`
+	FeedURL     string    `json:"feed_url"`
+	Title       string    `json:"title"`
+	Author      string    `json:"author"`
+	Description string    `json:"description"`
+	ImageURL    string    `json:"image_url"`
+	AddedAt     time.Time `json:"added_at"`
+	Paused      bool      `json:"paused"`
+
+	// LastChangedAt is when the feed last returned something new, not when it
+	// was last polled. A per-poll timestamp would rewrite this file on every
+	// poll even for a dormant feed, which blocks disk spindown (issue #8).
+	// The poll time is tracked in memory by PollHeartbeat instead.
+	LastChangedAt time.Time `json:"last_changed_at,omitzero"`
 
 	// SkipPatterns is a list of regex patterns. Episodes whose title or
 	// description matches any pattern are recorded in the index but skipped
@@ -77,11 +82,72 @@ type EpisodeIndex struct {
 }
 
 // podcastMutexes provides per-podcast locking to prevent concurrent writes.
-var podcastMutexes sync.Map
+//
+// Entries are reference counted so a slug that is deleted, or simply never
+// touched again, does not occupy the map for the life of the process. Handing
+// out a bare *sync.Mutex would make that unsafe: a caller holding the pointer
+// while the entry was removed would lock an orphan while the next caller
+// created and locked a fresh one, and the two would not exclude each other.
+// Locking and unlocking therefore go through lockPodcast, which is the only
+// thing that adjusts the count.
+var podcastMutexes = struct {
+	mu sync.Mutex
+	m  map[string]*podcastLock
+}{m: make(map[string]*podcastLock)}
 
-func podcastMu(slug string) *sync.Mutex {
-	v, _ := podcastMutexes.LoadOrStore(slug, &sync.Mutex{})
-	return v.(*sync.Mutex)
+type podcastLock struct {
+	mu sync.Mutex
+	// waiters counts holders plus goroutines blocked on mu, guarded by
+	// podcastMutexes.mu. The entry is removed when it reaches zero.
+	waiters int
+}
+
+// lockPodcast locks the podcast's mutex and returns the function that unlocks
+// it, normally used as `defer lockPodcast(slug)()`, which locks now and
+// unlocks on return.
+//
+// The returned function ignores every call after the first. Without that, a
+// second call while another goroutine held the same slug would release that
+// goroutine's lock, since sync.Mutex tracks no ownership, and drop the
+// reference count to zero so a third caller could enter the critical section
+// alongside the holder. No current caller can do this, but the failure is
+// silent corruption of exactly what the lock protects, so it is cheaper to
+// make the API misuse-resistant than to rely on every future caller.
+func lockPodcast(slug string) func() {
+	podcastMutexes.mu.Lock()
+	l, ok := podcastMutexes.m[slug]
+	if !ok {
+		l = &podcastLock{}
+		podcastMutexes.m[slug] = l
+	}
+	l.waiters++
+	podcastMutexes.mu.Unlock()
+
+	l.mu.Lock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.mu.Unlock()
+
+			podcastMutexes.mu.Lock()
+			defer podcastMutexes.mu.Unlock()
+			l.waiters--
+			// Only drop the entry once nobody holds or awaits it, so no goroutine
+			// can still be using this instance when a later caller makes a new one.
+			if l.waiters == 0 && podcastMutexes.m[slug] == l {
+				delete(podcastMutexes.m, slug)
+			}
+		})
+	}
+}
+
+// podcastLockCount reports how many per-podcast locks are currently tracked.
+// Used by tests to assert the map does not grow without bound.
+func podcastLockCount() int {
+	podcastMutexes.mu.Lock()
+	defer podcastMutexes.mu.Unlock()
+	return len(podcastMutexes.m)
 }
 
 // PodcastDir returns the full path to a podcast's directory.
@@ -99,6 +165,24 @@ func LoadMeta(dir string) (*PodcastMeta, error) {
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse meta: %w", err)
 	}
+
+	// Meta written before LastChangedAt existed carries last_checked_at, which
+	// was set on every poll. It is the closest thing to a change time those
+	// files have, so adopt it rather than showing the zero time. The adopted
+	// value is rewritten under the current key whenever something next saves
+	// meta, which for a quiet feed may not be soon: quiet polls no longer
+	// write.
+	if meta.LastChangedAt.IsZero() {
+		var legacy struct {
+			LastCheckedAt time.Time `json:"last_checked_at"`
+		}
+		// The outer Unmarshal already accepted this document, so a failure here
+		// only means the legacy key is absent or malformed, which leaves
+		// LastCheckedAt at the zero value we would fall back to anyway.
+		_ = json.Unmarshal(data, &legacy)
+		meta.LastChangedAt = legacy.LastCheckedAt
+	}
+
 	meta.Slug = filepath.Base(dir)
 	return &meta, nil
 }

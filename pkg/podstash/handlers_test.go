@@ -3,6 +3,7 @@ package podstash
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -811,4 +813,264 @@ func TestHandleHealthzReadOnlyDataDir(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
+}
+
+// Before the first poll after a restart there is no in-memory poll time, so the
+// home page falls back to the persisted last-change time and labels it as such.
+func TestHandleHomeFallsBackToLastChangedAt(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	slug := "show"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	changed := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/f.xml", Title: "Show", LastChangedAt: changed}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	// No poll recorded yet: the change time is shown, marked as not polled.
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	app.handleHome(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "updated") {
+		t.Errorf("home page did not label the fallback as an update time:\n%s", body)
+	}
+
+	// After a poll, the live time is shown instead.
+	polled := time.Now().UTC()
+	app.Heartbeat.Mark(slug, polled)
+
+	w = httptest.NewRecorder()
+	app.handleHome(w, req)
+	if body := w.Body.String(); !strings.Contains(body, "checked") {
+		t.Errorf("home page did not show the poll time after a poll:\n%s", body)
+	}
+}
+
+// The home page label has four states, and the two zero-time ones must render
+// no label and no orphaned separator.
+func TestHomeTemplateActivityLabelStates(t *testing.T) {
+	when := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		view        PodcastView
+		wantChecked bool
+		wantUpdated bool
+	}{
+		{
+			name:        "polled with a time",
+			view:        PodcastView{Meta: PodcastMeta{Title: "A"}, LastActivity: when, Polled: true},
+			wantChecked: true,
+		},
+		{
+			name:        "not polled, falls back to the change time",
+			view:        PodcastView{Meta: PodcastMeta{Title: "B"}, LastActivity: when},
+			wantUpdated: true,
+		},
+		{
+			name: "no time at all",
+			view: PodcastView{Meta: PodcastMeta{Title: "C"}},
+		},
+		{
+			name: "polled but no time recorded",
+			view: PodcastView{Meta: PodcastMeta{Title: "D"}, Polled: true},
+		},
+	}
+
+	tmpl := loadTemplates()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var sb strings.Builder
+			err := tmpl["home.html"].ExecuteTemplate(&sb, "layout.html", HomeData{Podcasts: []PodcastView{tt.view}})
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			out := sb.String()
+
+			if got := strings.Contains(out, "checked"); got != tt.wantChecked {
+				t.Errorf(`"checked" present = %v, want %v`, got, tt.wantChecked)
+			}
+			if got := strings.Contains(out, "updated"); got != tt.wantUpdated {
+				t.Errorf(`"updated" present = %v, want %v`, got, tt.wantUpdated)
+			}
+		})
+	}
+}
+
+// A refresh and a delete arriving together must not leave the deleted slug in
+// the heartbeat map: both handlers take the per-podcast lock, so the Mark
+// either precedes the Forget or never happens. (The poller reconciles the map
+// separately, since it marks outside that lock.)
+//
+// The iteration count is deliberately high. Only a fraction of interleavings
+// expose an unlocked Mark, and at 20 iterations an unlocked build still passed
+// roughly one run in ten.
+func TestRefreshAndDeleteDoNotLeakHeartbeatEntry(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	for i := range 200 {
+		slug := fmt.Sprintf("racer-%d", i)
+		dir := PodcastDir(dataDir, slug)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/f.xml", Title: slug}); err != nil {
+			t.Fatalf("SaveMeta: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			req := httptest.NewRequest("POST", "/podcasts/"+slug+"/refresh", nil)
+			req.SetPathValue("slug", slug)
+			app.handleRefreshPodcast(httptest.NewRecorder(), req)
+		})
+		wg.Go(func() {
+			req := httptest.NewRequest("POST", "/podcasts/"+slug+"/delete", nil)
+			req.SetPathValue("slug", slug)
+			app.handleDeletePodcast(httptest.NewRecorder(), req)
+		})
+		wg.Wait()
+
+		// The delete handler holds the lock across RemoveAll while the refresh
+		// handler holds it only around a LoadMeta, so the directory is always
+		// gone by here and the assertion always runs.
+		if _, err := os.Stat(dir); err == nil {
+			t.Fatalf("%s: podcast directory survived the delete", slug)
+		}
+		if _, ok := app.Heartbeat.LastPolled(slug); ok {
+			t.Fatalf("%s: deleted podcast still in the heartbeat map", slug)
+		}
+	}
+}
+
+// The poller marks after releasing the per-podcast lock, so a delete landing in
+// that gap leaves a stale entry no Forget will ever remove. Rendering the home
+// page reconciles the map against the podcasts that exist, which also stops a
+// re-added podcast inheriting its predecessor's poll time.
+func TestHandleHomeDropsHeartbeatEntriesForDeletedPodcasts(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	slug := "live"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/f.xml", Title: "Live"}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	app.Heartbeat.Mark(slug, time.Now().UTC())
+	// The state a poller mark racing a delete leaves behind.
+	app.Heartbeat.Mark("ghost", time.Now().UTC())
+
+	req := httptest.NewRequest("GET", "/", nil)
+	app.handleHome(httptest.NewRecorder(), req)
+
+	if _, ok := app.Heartbeat.LastPolled("ghost"); ok {
+		t.Error("stale entry for a deleted podcast survived a home page render")
+	}
+	if _, ok := app.Heartbeat.LastPolled(slug); !ok {
+		t.Error("entry for a live podcast was dropped")
+	}
+}
+
+// A headless install serves only feed.xml, so the home page may never render.
+// The poller reconciles too, which bounds the map without any UI traffic.
+func TestPollOnceDropsHeartbeatEntriesForDeletedPodcasts(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	slug := "live"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.invalid/f.xml", Title: "Live", Paused: true}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	app.Heartbeat.Mark(slug, time.Now().UTC())
+	// What a poller mark racing a delete leaves behind.
+	app.Heartbeat.Mark("ghost", time.Now().UTC())
+
+	pollOnce(app)
+
+	if _, ok := app.Heartbeat.LastPolled("ghost"); ok {
+		t.Error("stale entry survived a poll")
+	}
+	if _, ok := app.Heartbeat.LastPolled(slug); !ok {
+		t.Error("entry for an existing podcast was dropped by a poll")
+	}
+}
+
+// The lock map is keyed by slug like the heartbeat was, so it must not retain
+// an entry for every podcast that has ever been touched.
+func TestPodcastLocksDoNotAccumulate(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	for i := range 50 {
+		slug := fmt.Sprintf("ephemeral-%d", i)
+		dir := PodcastDir(dataDir, slug)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.invalid/f.xml", Title: slug}); err != nil {
+			t.Fatalf("SaveMeta: %v", err)
+		}
+
+		req := httptest.NewRequest("POST", "/podcasts/"+slug+"/delete", nil)
+		req.SetPathValue("slug", slug)
+		app.handleDeletePodcast(httptest.NewRecorder(), req)
+	}
+
+	// Wait rather than assert directly: a handler may leave a detached
+	// goroutine holding a lock, and this must not pass or fail on its timing.
+	waitForPodcastLockCount(t, 0)
+}
+
+// The refresh handler returns while a detached goroutine still holds the lock,
+// so the entry outlives the request. It must still be released once that
+// goroutine finishes, rather than pinning the slug for the life of the process.
+func TestRefreshHandlerReleasesItsLockAfterTheGoroutineFinishes(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	app.Client = srv.Client()
+
+	slug := "detached"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Detached"}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/podcasts/"+slug+"/refresh", nil)
+	req.SetPathValue("slug", slug)
+	w := httptest.NewRecorder()
+	app.handleRefreshPodcast(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", w.Code)
+	}
+
+	// The handler has returned, but the refresh is still in flight.
+	close(release)
+	waitForPodcastLockCount(t, 0)
 }

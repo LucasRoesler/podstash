@@ -43,6 +43,7 @@ func Run(cfg Config) {
 		Client:          &http.Client{Timeout: cfg.HTTPTimeout},
 		Tmpl:            loadTemplates(),
 		DownloadWorkers: cfg.DownloadWorkers,
+		Heartbeat:       NewPollHeartbeat(),
 	}
 
 	mux := http.NewServeMux()
@@ -162,10 +163,22 @@ func pollOnce(app *App) {
 			slog.Error("poll: refresh failed", "podcast", p.Slug, "error", err)
 			continue
 		}
+
+		// Marked only on success, so "checked" on the home page means
+		// "successfully checked". A feed that fails every poll keeps showing
+		// its last change time rather than claiming a check that did not
+		// happen; the failures are in the log above.
+		app.Heartbeat.Mark(p.Slug, time.Now().UTC())
 		if added > 0 {
 			slog.Info("poll: new episodes", "podcast", p.Slug, "added", added)
 		}
 	}
+
+	// Reconcile after marking, so an entry for a podcast deleted during the
+	// loop above does not survive until the next poll. Doing it here rather
+	// than only when the home page renders means a headless install, serving
+	// nothing but feed.xml to a podcast client, still bounds the map.
+	app.Heartbeat.RetainPodcasts(podcasts)
 
 	slog.Info("poll: downloading pending episodes")
 	if err := DownloadPending(app.Client, app.DataDir, app.DownloadWorkers); err != nil {

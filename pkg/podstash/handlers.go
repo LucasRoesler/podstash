@@ -21,6 +21,10 @@ type App struct {
 	Client          HTTPClient
 	Tmpl            map[string]*template.Template
 	DownloadWorkers int
+
+	// Heartbeat records poll times in memory. May be nil, in which case the
+	// home page falls back to each podcast's last change time.
+	Heartbeat *PollHeartbeat
 }
 
 // PodcastView holds data for rendering a podcast in templates.
@@ -28,6 +32,13 @@ type PodcastView struct {
 	Meta               PodcastMeta
 	TotalEpisodes      int
 	DownloadedEpisodes int
+
+	// LastActivity is what the "checked"/"updated" label renders. Polled is
+	// true when it is a poll time from this process, false when it is the
+	// persisted last-change time, which is all we have before the first poll
+	// after a restart.
+	LastActivity time.Time
+	Polled       bool
 }
 
 // PodcastDetailView holds data for the podcast detail page.
@@ -69,6 +80,11 @@ func (app *App) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reconcile the heartbeat against the podcasts that actually exist, so a
+	// slug deleted while a mark was in flight cannot linger. The poller does
+	// the same after each pass; this keeps the page itself consistent.
+	app.Heartbeat.RetainPodcasts(podcasts)
+
 	var views []PodcastView
 	for _, p := range podcasts {
 		dir := PodcastDir(app.DataDir, p.Slug)
@@ -80,10 +96,16 @@ func (app *App) handleHome(w http.ResponseWriter, r *http.Request) {
 				downloaded++
 			}
 		}
+		activity, polled := app.Heartbeat.LastPolled(p.Slug)
+		if !polled {
+			activity = p.LastChangedAt
+		}
 		views = append(views, PodcastView{
 			Meta:               p,
 			TotalEpisodes:      total,
 			DownloadedEpisodes: downloaded,
+			LastActivity:       activity,
+			Polled:             polled,
 		})
 	}
 
@@ -201,9 +223,7 @@ func (app *App) handleDeletePodcast(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := PodcastDir(app.DataDir, slug)
 
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	if _, err := LoadMeta(dir); err != nil {
 		http.NotFound(w, r)
@@ -214,9 +234,28 @@ func (app *App) handleDeletePodcast(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to delete: %v", err), http.StatusInternalServerError)
 		return
 	}
+	app.Heartbeat.Forget(slug)
 
 	slog.Info("podcast deleted", "podcast", slug)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// markRefreshRequested records a user-requested refresh and reports whether the
+// podcast exists. Both happen under the per-podcast lock the delete handler
+// holds, so a delete cannot land between the check and the mark. The lock must
+// be released before the refresh itself runs, because refreshPodcast takes it
+// too, which is why this is separate from the goroutine below.
+//
+// The request is the check, so it is recorded now rather than when the refresh
+// finishes.
+func (app *App) markRefreshRequested(slug string) bool {
+	defer lockPodcast(slug)()
+
+	if _, err := LoadMeta(PodcastDir(app.DataDir, slug)); err != nil {
+		return false
+	}
+	app.Heartbeat.Mark(slug, time.Now().UTC())
+	return true
 }
 
 func (app *App) handleRefreshPodcast(w http.ResponseWriter, r *http.Request) {
@@ -225,9 +264,7 @@ func (app *App) handleRefreshPodcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the podcast exists before launching background work.
-	dir := PodcastDir(app.DataDir, slug)
-	if _, err := LoadMeta(dir); err != nil {
+	if !app.markRefreshRequested(slug) {
 		http.NotFound(w, r)
 		return
 	}
@@ -257,9 +294,7 @@ func (app *App) handlePausePodcast(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := PodcastDir(app.DataDir, slug)
 
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {
@@ -287,9 +322,7 @@ func (app *App) handleSetDownloadAfter(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := PodcastDir(app.DataDir, slug)
 
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {
@@ -323,9 +356,7 @@ func (app *App) handleAddSkipPattern(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := PodcastDir(app.DataDir, slug)
 
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {
@@ -361,9 +392,7 @@ func (app *App) handleDeleteSkipPattern(w http.ResponseWriter, r *http.Request) 
 	}
 	dir := PodcastDir(app.DataDir, slug)
 
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {

@@ -194,9 +194,7 @@ func DownloadPending(client HTTPClient, dataDir string, workers int) error {
 
 // downloadPodcastEpisodes downloads all pending episodes for a single podcast.
 func downloadPodcastEpisodes(client HTTPClient, dir, slug string) {
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {
