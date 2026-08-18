@@ -464,13 +464,16 @@ func (app *App) handleOPMLExport(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(data)
 }
 
-// handleHealthz reports whether the data directory is still reachable.
+// handleHealthz reports whether the podcasts directory still stats.
 //
-// This is a stat, not a write. Writability is checked once at startup by
-// CheckDataDirWritable: it is a property of the mount, so re-checking it per
-// request only re-answered a settled question, and the probe file's create and
-// unlink dirtied the library directory on every healthcheck poll, keeping
-// spinning disks awake. See issue #8.
+// Deliberately a stat and not a write: writability is checked once at startup
+// by CheckDataDirWritable, because the probe file's create and unlink dirtied
+// the library directory on every poll of this endpoint (issue #8).
+//
+// A stat is weaker than the write it replaces. It catches a data directory that
+// has disappeared, but not one that went read-only after startup, nor an
+// unmount that leaves the mountpoint directory behind on the underlying
+// filesystem. Those surface through failing downloads and index writes.
 func (app *App) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	dir := filepath.Join(app.DataDir, podcastsDir)
 

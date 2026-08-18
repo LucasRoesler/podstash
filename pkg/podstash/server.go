@@ -31,6 +31,11 @@ func Run(cfg Config) {
 		os.Exit(1)
 	}
 
+	// Versions before the issue #8 fix wrote a .healthcheck probe on every
+	// /healthz request and could leave one behind on a crash. Clear it so the
+	// file does not linger in the library directory forever.
+	removeLegacyHealthcheckProbe(cfg.DataDir)
+
 	// MkdirAll succeeds on an existing directory whatever its permissions, so
 	// probe for writability explicitly rather than discovering it on first save.
 	if err := CheckDataDirWritable(cfg.DataDir); err != nil {

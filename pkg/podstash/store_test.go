@@ -382,9 +382,12 @@ func TestCheckDataDirWritable(t *testing.T) {
 	}
 
 	// The probe must not be left behind.
-	probe := filepath.Join(dir, podcastsDir, ".healthcheck")
-	if _, err := os.Stat(probe); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("probe file still present: %v", err)
+	entries, err := os.ReadDir(filepath.Join(dir, podcastsDir))
+	if err != nil {
+		t.Fatalf("read podcasts dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("probe file still present: %v", entries)
 	}
 }
 
@@ -406,4 +409,70 @@ func TestCheckDataDirWritableReadOnly(t *testing.T) {
 	if err := CheckDataDirWritable(dir); err == nil {
 		t.Error("CheckDataDirWritable() = nil, want error for read-only dir")
 	}
+}
+
+// Regression test: a leftover probe from a pre-issue-#8 version must not make a
+// writable directory look unwritable, since server.Run exits on that error.
+func TestCheckDataDirWritableIgnoresStaleProbe(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits are not enforced")
+	}
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, podcasts string)
+	}{
+		{
+			name: "unreadable leftover file",
+			setup: func(t *testing.T, podcasts string) {
+				if err := os.WriteFile(filepath.Join(podcasts, legacyHealthcheckFilename), nil, 0400); err != nil {
+					t.Fatalf("write stale probe: %v", err)
+				}
+			},
+		},
+		{
+			name: "leftover path is a directory",
+			setup: func(t *testing.T, podcasts string) {
+				if err := os.MkdirAll(filepath.Join(podcasts, legacyHealthcheckFilename), 0755); err != nil {
+					t.Fatalf("mkdir stale probe: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			podcasts := filepath.Join(dir, podcastsDir)
+			if err := os.MkdirAll(podcasts, 0755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+			tt.setup(t, podcasts)
+
+			if err := CheckDataDirWritable(dir); err != nil {
+				t.Errorf("CheckDataDirWritable() = %v, want nil despite stale probe", err)
+			}
+		})
+	}
+}
+
+func TestRemoveLegacyHealthcheckProbe(t *testing.T) {
+	dir := t.TempDir()
+	podcasts := filepath.Join(dir, podcastsDir)
+	if err := os.MkdirAll(podcasts, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	probe := filepath.Join(podcasts, legacyHealthcheckFilename)
+	if err := os.WriteFile(probe, nil, 0644); err != nil {
+		t.Fatalf("write probe: %v", err)
+	}
+
+	removeLegacyHealthcheckProbe(dir)
+
+	if _, err := os.Stat(probe); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("legacy probe still present: %v", err)
+	}
+
+	// Absent probe is the normal case and must not panic or complain.
+	removeLegacyHealthcheckProbe(dir)
 }
