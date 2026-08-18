@@ -415,8 +415,7 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 	feed, validators, err := FetchFeedConditional(client, meta.FeedURL, prev)
 	if errors.Is(err, ErrFeedNotModified) {
 		// The feed is unchanged, so the index is left alone and the poll time
-		// is not recorded here: writing meta on every poll is what kept
-		// spinning disks awake (issue #8), and PollHeartbeat holds it instead.
+		// goes to PollHeartbeat, which documents why it is not written here.
 		//
 		// Validators are the exception. A 304 can carry ones we do not hold,
 		// most importantly a server that has gained a strong ETag for a feed

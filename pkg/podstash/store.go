@@ -107,8 +107,10 @@ func LoadMeta(dir string) (*PodcastMeta, error) {
 
 	// Meta written before LastChangedAt existed carries last_checked_at, which
 	// was set on every poll. It is the closest thing to a change time those
-	// files have, so adopt it rather than showing the zero time; the next
-	// refresh replaces it with a real change time.
+	// files have, so adopt it rather than showing the zero time. The adopted
+	// value is rewritten under the current key whenever something next saves
+	// meta, which for a quiet feed may not be soon: quiet polls no longer
+	// write.
 	if meta.LastChangedAt.IsZero() {
 		var legacy struct {
 			LastCheckedAt time.Time `json:"last_checked_at"`
