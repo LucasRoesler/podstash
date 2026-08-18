@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -645,6 +646,9 @@ func TestFetchFeedConditionalSendsValidators(t *testing.T) {
 	if gotINM != etag {
 		t.Errorf("If-None-Match = %q, want %q", gotINM, etag)
 	}
+	if gotIMS != lastMod {
+		t.Errorf("If-Modified-Since = %q, want %q", gotIMS, lastMod)
+	}
 	if next.ETag != etag {
 		t.Errorf("validators not carried through 304: ETag = %q, want %q", next.ETag, etag)
 	}
@@ -732,16 +736,33 @@ func TestRefreshPodcastStoresAndReusesValidators(t *testing.T) {
 		t.Errorf("full feed bodies sent = %d, want 1 (second poll should be a 304)", fullBodies)
 	}
 
-	// The 304 path must still advance LastCheckedAt and keep the ETag.
+	// The 304 path must still persist meta. Comparing against the value the
+	//200 path stored would pass even if the 304 branch saved nothing, so
+	// LastCheckedAt is forced backwards on disk first: only a save performed
+	// by the 304 branch itself can move it forward again.
 	meta, err = LoadMeta(dir)
 	if err != nil {
 		t.Fatalf("LoadMeta: %v", err)
 	}
+	stale := time.Now().UTC().Add(-24 * time.Hour)
+	meta.LastCheckedAt = stale
+	if err := SaveMeta(dir, meta); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("third refresh: %v", err)
+	}
+
+	meta, err = LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if !meta.LastCheckedAt.After(stale) {
+		t.Errorf("LastCheckedAt = %v, want advanced past %v by the 304 path", meta.LastCheckedAt, stale)
+	}
 	if meta.ETag != etag {
 		t.Errorf("ETag after 304 = %q, want %q", meta.ETag, etag)
-	}
-	if meta.LastCheckedAt.IsZero() {
-		t.Error("LastCheckedAt not set on 304 path")
 	}
 }
 
@@ -789,7 +810,13 @@ func TestRefreshPodcastNotModifiedPreservesIndex(t *testing.T) {
 		t.Fatalf("LoadIndex: %v", err)
 	}
 	if len(after.Episodes) != len(before.Episodes) {
-		t.Errorf("episodes = %d, want %d unchanged across a 304", len(after.Episodes), len(before.Episodes))
+		t.Fatalf("episodes = %d, want %d unchanged across a 304", len(after.Episodes), len(before.Episodes))
+	}
+	// Compare full entries, not just the count: a 304 must leave GUIDs,
+	// filenames and download records exactly as they were.
+	if !reflect.DeepEqual(after.Episodes, before.Episodes) {
+		t.Errorf("episode entries changed across a 304:\nbefore: %+v\nafter:  %+v",
+			before.Episodes, after.Episodes)
 	}
 }
 
@@ -851,5 +878,106 @@ func TestFetchFeedConditionalDropsOversizedValidators(t *testing.T) {
 	}
 	if validators.ETag != "" {
 		t.Errorf("oversized ETag stored (%d bytes), want dropped", len(validators.ETag))
+	}
+}
+
+// Regression test: a 304 says the feed is unchanged relative to what we stored,
+// which is worthless if the stored index is gone. Taking the fast path anyway
+// would strand the podcast with an empty index forever, since the same ETag
+// returns 304 on every future poll.
+func TestRefreshPodcastRebuildsMissingIndexDespiteValidators(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const etag = `"v1"`
+	conditionalRequests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			conditionalRequests++
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "recover"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Recover", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	before, err := LoadIndex(dir)
+	if err != nil {
+		t.Fatalf("LoadIndex: %v", err)
+	}
+	if len(before.Episodes) == 0 {
+		t.Fatal("first refresh indexed nothing")
+	}
+
+	if err := os.Remove(filepath.Join(dir, indexFilename)); err != nil {
+		t.Fatalf("remove index: %v", err)
+	}
+
+	added, err := RefreshPodcast(srv.Client(), dataDir, slug)
+	if err != nil {
+		t.Fatalf("recovery refresh: %v", err)
+	}
+	if added != len(before.Episodes) {
+		t.Errorf("added = %d, want %d re-added from a full fetch", added, len(before.Episodes))
+	}
+	if conditionalRequests != 0 {
+		t.Errorf("sent %d conditional requests with no index on disk, want 0", conditionalRequests)
+	}
+
+	after, err := LoadIndex(dir)
+	if err != nil {
+		t.Fatalf("LoadIndex after recovery: %v", err)
+	}
+	if len(after.Episodes) != len(before.Episodes) {
+		t.Errorf("episodes = %d, want %d rebuilt", len(after.Episodes), len(before.Episodes))
+	}
+}
+
+// A corrupt index must keep erroring rather than being silently discarded: it
+// holds download records, so podstash must not decide on its own to throw it
+// away and re-fetch everything.
+func TestRefreshPodcastReportsCorruptIndex(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"v1"`)
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "corrupt"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Corrupt", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, indexFilename), []byte("{ not json"), 0644); err != nil {
+		t.Fatalf("write corrupt index: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err == nil {
+		t.Error("refresh with a corrupt index returned nil, want an error")
 	}
 }

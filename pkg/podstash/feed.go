@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -365,6 +367,17 @@ type rssOutputItem struct {
 	Enclosure   RSSEnclosure `xml:"enclosure"`
 }
 
+// indexIsUsable reports whether the podcast's index file exists and parses.
+// A missing or corrupt index must be rebuilt from a full feed fetch, so it
+// disqualifies the conditional-request fast path.
+func indexIsUsable(dir string) bool {
+	if _, err := os.Stat(filepath.Join(dir, indexFilename)); err != nil {
+		return false
+	}
+	_, err := LoadIndex(dir)
+	return err == nil
+}
+
 // RefreshPodcast fetches the RSS feed for a podcast and adds any new episodes
 // to the index. Returns the number of new episodes added.
 func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error) {
@@ -378,12 +391,22 @@ func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error)
 		return 0, fmt.Errorf("refresh %s: %w", slug, err)
 	}
 
-	prev := FeedValidators{ETag: meta.ETag, LastModified: meta.LastModified}
+	// Only send validators when a readable index exists to go with them. A 304
+	// tells us the feed is unchanged relative to what we already stored, which
+	// is worthless if that stored index is gone: the fast path would skip the
+	// rebuild and the same ETag would return 304 forever, stranding the podcast
+	// with an empty index. Fetching unconditionally in that case restores the
+	// self-healing the full-parse-every-poll behaviour used to provide.
+	prev := FeedValidators{}
+	if indexIsUsable(dir) {
+		prev = FeedValidators{ETag: meta.ETag, LastModified: meta.LastModified}
+	}
+
 	feed, validators, err := FetchFeedConditional(client, meta.FeedURL, prev)
 	if errors.Is(err, ErrFeedNotModified) {
-		// The feed is unchanged, so the index cannot have changed either:
-		// skip loading and rewriting it. Meta is still saved so LastCheckedAt
-		// reflects the poll.
+		// The feed is unchanged and the index is present, so neither can have
+		// changed: skip loading and rewriting the index. Meta is still saved so
+		// LastCheckedAt reflects the poll.
 		meta.LastCheckedAt = time.Now().UTC()
 		meta.ETag = validators.ETag
 		meta.LastModified = validators.LastModified
