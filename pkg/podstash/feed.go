@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
@@ -367,17 +365,6 @@ type rssOutputItem struct {
 	Enclosure   RSSEnclosure `xml:"enclosure"`
 }
 
-// indexIsUsable reports whether the podcast's index file exists and parses.
-// A missing or corrupt index must be rebuilt from a full feed fetch, so it
-// disqualifies the conditional-request fast path.
-func indexIsUsable(dir string) bool {
-	if _, err := os.Stat(filepath.Join(dir, indexFilename)); err != nil {
-		return false
-	}
-	_, err := LoadIndex(dir)
-	return err == nil
-}
-
 // ForceRefreshPodcast refreshes ignoring stored cache validators, so the feed
 // is fetched and parsed in full. Used for refreshes a person explicitly asked
 // for, where a silent 304 would make the action look broken.
@@ -406,14 +393,22 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 		return 0, fmt.Errorf("refresh %s: %w", slug, err)
 	}
 
-	// Only send validators when a readable index exists to go with them. A 304
-	// tells us the feed is unchanged relative to what we already stored, which
-	// is worthless if that stored index is gone: the fast path would skip the
-	// rebuild and the same ETag would return 304 forever, stranding the podcast
-	// with an empty index. Fetching unconditionally in that case restores the
-	// self-healing the full-parse-every-poll behaviour used to provide.
+	// Load the index before fetching, because whether it already holds episodes
+	// decides if the conditional fast path is safe.
+	idx, err := LoadIndex(dir)
+	if err != nil {
+		return 0, fmt.Errorf("refresh %s: %w", slug, err)
+	}
+
+	// Send validators only when there is an index worth preserving. A 304 says
+	// the feed is unchanged relative to what we stored, which is worthless when
+	// nothing was stored: the fast path would skip the rebuild and the same
+	// ETag would return 304 on every future poll, stranding the podcast with an
+	// empty index. An empty index is reachable without corruption, since a
+	// podcast is created with one (handlers.go) and SaveMeta persists the ETag
+	// before SaveIndex runs, so a failed index write leaves exactly that state.
 	prev := FeedValidators{}
-	if !force && indexIsUsable(dir) {
+	if !force && len(idx.Episodes) > 0 {
 		prev = FeedValidators{ETag: meta.ETag, LastModified: meta.LastModified}
 	}
 
@@ -430,11 +425,6 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 		}
 		return 0, nil
 	}
-	if err != nil {
-		return 0, fmt.Errorf("refresh %s: %w", slug, err)
-	}
-
-	idx, err := LoadIndex(dir)
 	if err != nil {
 		return 0, fmt.Errorf("refresh %s: %w", slug, err)
 	}

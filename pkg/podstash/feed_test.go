@@ -744,6 +744,11 @@ func TestRefreshPodcastStoresAndReusesValidators(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMeta: %v", err)
 	}
+	// Poison LastCheckedAt only: it does not affect request routing, so the
+	// next refresh still takes the 304 path, and only a save performed by that
+	// branch can move it forward again. Poisoning the ETag instead would send
+	// a validator the server rejects, turning the very poll under test into a
+	// 200 and testing nothing.
 	stale := time.Now().UTC().Add(-24 * time.Hour)
 	meta.LastCheckedAt = stale
 	if err := SaveMeta(dir, meta); err != nil {
@@ -865,19 +870,45 @@ func TestFetchFeedConditionalDropsOversizedValidators(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	huge := `"` + strings.Repeat("a", maxValidatorLen) + `"`
+	atLimit := strings.Repeat("a", maxValidatorLen)
+	overLimit := strings.Repeat("a", maxValidatorLen+1)
+
+	var sendETagRef, sendLMRef *string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("ETag", huge)
+		w.Header().Set("ETag", *sendETagRef)
+		w.Header().Set("Last-Modified", *sendLMRef)
 		w.Write(data)
 	}))
 	defer srv.Close()
 
-	_, validators, err := FetchFeedConditional(srv.Client(), srv.URL, FeedValidators{})
-	if err != nil {
-		t.Fatalf("fetch: %v", err)
+	// Drive the real fetch path: calling boundedValidator directly here would
+	// still pass if the production code stopped calling it.
+	var sendETag, sendLM string
+	sendETagRef, sendLMRef = &sendETag, &sendLM
+	fetch := func(t *testing.T, etag, lastMod string) FeedValidators {
+		t.Helper()
+		sendETag, sendLM = etag, lastMod
+		_, validators, err := FetchFeedConditional(srv.Client(), srv.URL, FeedValidators{})
+		if err != nil {
+			t.Fatalf("fetch: %v", err)
+		}
+		return validators
 	}
-	if validators.ETag != "" {
-		t.Errorf("oversized ETag stored (%d bytes), want dropped", len(validators.ETag))
+
+	// Exactly at the limit is kept; one byte over is dropped. Pins the boundary
+	// so a > / >= slip is caught.
+	if got := fetch(t, atLimit, atLimit); got.ETag != atLimit {
+		t.Errorf("ETag at the limit (%d bytes) was dropped", maxValidatorLen)
+	} else if got.LastModified != atLimit {
+		t.Errorf("Last-Modified at the limit (%d bytes) was dropped", maxValidatorLen)
+	}
+
+	got := fetch(t, overLimit, overLimit)
+	if got.ETag != "" {
+		t.Errorf("oversized ETag stored (%d bytes), want dropped", len(got.ETag))
+	}
+	if got.LastModified != "" {
+		t.Errorf("oversized Last-Modified stored (%d bytes), want dropped", len(got.LastModified))
 	}
 }
 
@@ -951,15 +982,22 @@ func TestRefreshPodcastRebuildsMissingIndexDespiteValidators(t *testing.T) {
 
 // A corrupt index must keep erroring rather than being silently discarded: it
 // holds download records, so podstash must not decide on its own to throw it
-// away and re-fetch everything.
+// away and re-fetch everything. Established with a stored ETag and a populated
+// index first, so corrupting the index is the only thing that changes, and a
+// version that skipped the parse would silently take the 304 path instead.
 func TestRefreshPodcastReportsCorruptIndex(t *testing.T) {
 	data, err := os.ReadFile("testdata/feed_simple.xml")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
 
+	const etag = `"v1"`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("ETag", `"v1"`)
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		w.Write(data)
 	}))
 	defer srv.Close()
@@ -973,6 +1011,19 @@ func TestRefreshPodcastReportsCorruptIndex(t *testing.T) {
 	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Corrupt", AddedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("SaveMeta: %v", err)
 	}
+
+	// Populate the index and store the ETag, so the conditional path is live.
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.ETag != etag {
+		t.Fatalf("setup did not store the ETag: %q", meta.ETag)
+	}
+
 	if err := os.WriteFile(filepath.Join(dir, indexFilename), []byte("{ not json"), 0644); err != nil {
 		t.Fatalf("write corrupt index: %v", err)
 	}
@@ -1041,5 +1092,65 @@ func TestForceRefreshPodcastIgnoresValidators(t *testing.T) {
 	}
 	if conditional != 1 {
 		t.Errorf("forced refresh sent a conditional request: %d, want 1", conditional)
+	}
+}
+
+// The 304 branch must persist the validators it carried forward, not merely
+// leave whatever the last 200 wrote. A server that omits the ETag on its 304
+// makes the difference observable: only the carry-forward keeps it on disk,
+// so a branch that saves nothing (or saves the empty response value) is caught.
+func TestRefreshPodcastPersistsValidatorsCarriedThrough304(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const etag = `"v1"`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == etag {
+			// Deliberately no ETag header on the 304, which RFC 9110 permits.
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", etag)
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "carried"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Carried", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	// Blank the stored ETag's companion field so the only way it can be on disk
+	// after the next poll is the 304 branch writing it back.
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	meta.LastModified = "Wed, 21 Oct 2026 07:28:00 GMT"
+	if err := SaveMeta(dir, meta); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+
+	meta, err = LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.ETag != etag {
+		t.Errorf("ETag = %q, want %q carried through the 304", meta.ETag, etag)
 	}
 }
