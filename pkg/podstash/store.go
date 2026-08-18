@@ -47,6 +47,12 @@ type PodcastMeta struct {
 	// Zero value means no date filter (download all).
 	DownloadAfter *time.Time `json:"download_after,omitzero"`
 
+	// ETag and LastModified are the HTTP cache validators the feed server sent
+	// with the last successful fetch. They are echoed back on the next poll so
+	// an unchanged feed can answer 304 instead of resending the document.
+	ETag         string `json:"etag,omitzero"`
+	LastModified string `json:"last_modified,omitzero"`
+
 	// Slug is the directory name, derived from Title. Not stored in JSON.
 	Slug string `json:"-"`
 }

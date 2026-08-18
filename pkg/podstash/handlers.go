@@ -233,7 +233,9 @@ func (app *App) handleRefreshPodcast(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
-		added, err := RefreshPodcast(app.Client, app.DataDir, slug)
+		// A person asked for this refresh, so ignore cache validators: a
+		// silent 304 would make the button look broken.
+		added, err := ForceRefreshPodcast(app.Client, app.DataDir, slug)
 		if err != nil {
 			slog.Error("refresh failed", "podcast", slug, "error", err)
 			return
