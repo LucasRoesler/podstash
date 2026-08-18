@@ -103,13 +103,16 @@ type podcastLock struct {
 }
 
 // lockPodcast locks the podcast's mutex and returns the function that unlocks
-// it. Callers must call the returned function exactly once, normally deferred
-// as `defer lockPodcast(slug)()`, which locks now and unlocks on return.
+// it, normally used as `defer lockPodcast(slug)()`, which locks now and
+// unlocks on return.
 //
-// Calling it twice is a programming error and crashes the process on the
-// second call, the same way unlocking a plain sync.Mutex twice always did.
-// That is deliberate: swallowing it would leave the reference count wrong and
-// the entry pinned, turning a loud bug into a silent one.
+// The returned function ignores every call after the first. Without that, a
+// second call while another goroutine held the same slug would release that
+// goroutine's lock, since sync.Mutex tracks no ownership, and drop the
+// reference count to zero so a third caller could enter the critical section
+// alongside the holder. No current caller can do this, but the failure is
+// silent corruption of exactly what the lock protects, so it is cheaper to
+// make the API misuse-resistant than to rely on every future caller.
 func lockPodcast(slug string) func() {
 	podcastMutexes.mu.Lock()
 	l, ok := podcastMutexes.m[slug]
@@ -122,17 +125,20 @@ func lockPodcast(slug string) func() {
 
 	l.mu.Lock()
 
+	var once sync.Once
 	return func() {
-		l.mu.Unlock()
+		once.Do(func() {
+			l.mu.Unlock()
 
-		podcastMutexes.mu.Lock()
-		defer podcastMutexes.mu.Unlock()
-		l.waiters--
-		// Only drop the entry once nobody holds or awaits it, so no goroutine
-		// can still be using this instance when a later caller makes a new one.
-		if l.waiters == 0 && podcastMutexes.m[slug] == l {
-			delete(podcastMutexes.m, slug)
-		}
+			podcastMutexes.mu.Lock()
+			defer podcastMutexes.mu.Unlock()
+			l.waiters--
+			// Only drop the entry once nobody holds or awaits it, so no goroutine
+			// can still be using this instance when a later caller makes a new one.
+			if l.waiters == 0 && podcastMutexes.m[slug] == l {
+				delete(podcastMutexes.m, slug)
+			}
+		})
 	}
 }
 

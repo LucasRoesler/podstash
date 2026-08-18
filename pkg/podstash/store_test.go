@@ -735,3 +735,42 @@ func TestLockPodcastKeepsEntryWhileWaitersBlock(t *testing.T) {
 		t.Errorf("lock count after every waiter released = %d, want 0", got)
 	}
 }
+
+// Calling the unlock function twice must not release a lock another goroutine
+// now holds. sync.Mutex tracks no ownership, so an unguarded second call would
+// let a third caller into the critical section alongside the holder.
+func TestLockPodcastUnlockIsIdempotent(t *testing.T) {
+	unlock := lockPodcast("idempotent")
+
+	held := make(chan struct{})
+	releaseHolder := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		defer lockPodcast("idempotent")()
+		close(held)
+		<-releaseHolder
+	})
+
+	unlock()
+	<-held
+	// The second goroutine is inside the critical section; a stray second call
+	// must not hand its lock to anyone else.
+	unlock()
+
+	entered := make(chan struct{})
+	go func() {
+		defer lockPodcast("idempotent")()
+		close(entered)
+	}()
+
+	select {
+	case <-entered:
+		t.Error("a third caller entered while the lock was held")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseHolder)
+	wg.Wait()
+	<-entered
+	waitForPodcastLockCount(t, 0)
+}
