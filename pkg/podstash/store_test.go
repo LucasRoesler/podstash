@@ -668,3 +668,51 @@ func TestLockPodcastKeepsExclusionAcrossEntryChurn(t *testing.T) {
 		t.Errorf("lock count = %d, want 0 after all holders released", got)
 	}
 }
+
+// A panicking caller must still release its lock and leave the map consistent,
+// or one bad request would wedge that podcast for the life of the process.
+func TestLockPodcastReleasesOnPanic(t *testing.T) {
+	before := podcastLockCount()
+
+	func() {
+		defer func() { _ = recover() }()
+		defer lockPodcast("panicky")()
+		panic("boom")
+	}()
+
+	if got := podcastLockCount(); got != before {
+		t.Fatalf("lock count after a panic = %d, want %d", got, before)
+	}
+
+	// And the podcast is still lockable.
+	unlock := lockPodcast("panicky")
+	unlock()
+}
+
+// An entry must not be dropped while goroutines are still blocked acquiring it.
+func TestLockPodcastKeepsEntryWhileWaitersBlock(t *testing.T) {
+	unlock := lockPodcast("blocked")
+
+	var wg sync.WaitGroup
+	started := make(chan struct{}, 8)
+	for range 8 {
+		wg.Go(func() {
+			started <- struct{}{}
+			lockPodcast("blocked")()
+		})
+	}
+	for range 8 {
+		<-started
+	}
+
+	if got := podcastLockCount(); got != 1 {
+		t.Errorf("lock count with waiters blocked = %d, want 1", got)
+	}
+
+	unlock()
+	wg.Wait()
+
+	if got := podcastLockCount(); got != 0 {
+		t.Errorf("lock count after every waiter released = %d, want 0", got)
+	}
+}

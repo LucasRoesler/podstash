@@ -103,7 +103,13 @@ type podcastLock struct {
 }
 
 // lockPodcast locks the podcast's mutex and returns the function that unlocks
-// it. Callers must call the returned function exactly once, normally deferred.
+// it. Callers must call the returned function exactly once, normally deferred
+// as `defer lockPodcast(slug)()`, which locks now and unlocks on return.
+//
+// Calling it twice is a programming error and crashes the process on the
+// second call, the same way unlocking a plain sync.Mutex twice always did.
+// That is deliberate: swallowing it would leave the reference count wrong and
+// the entry pinned, turning a loud bug into a silent one.
 func lockPodcast(slug string) func() {
 	podcastMutexes.mu.Lock()
 	l, ok := podcastMutexes.m[slug]
