@@ -46,6 +46,29 @@ type FeedValidators struct {
 // be far larger, and these are persisted to disk and resent on every poll.
 const maxValidatorLen = 512
 
+// usableLastModified drops a Last-Modified we must not send back.
+//
+// A future date is the dangerous one: an origin that honours If-Modified-Since
+// answers 304 for everything until that date arrives, so a feed stamped years
+// ahead by a skewed clock would stop delivering episodes with no way back.
+// Dropping it costs one unconditional fetch per poll for that feed.
+func usableLastModified(v string) string {
+	v = boundedValidator(v)
+	if v == "" {
+		return ""
+	}
+	t, err := http.ParseTime(v)
+	if err != nil {
+		// Unparseable to us, but the origin may still recognise the exact
+		// bytes it sent, so keep it.
+		return v
+	}
+	if t.After(time.Now()) {
+		return ""
+	}
+	return v
+}
+
 // boundedValidator drops a validator too long to be genuine. Dropping one costs
 // a full fetch on the next poll, which is what would happen without it anyway.
 func boundedValidator(v string) string {
@@ -189,7 +212,7 @@ func FetchFeedConditional(client HTTPClient, url string, prev FeedValidators) (*
 
 	next := FeedValidators{
 		ETag:         boundedValidator(resp.Header.Get("ETag")),
-		LastModified: boundedValidator(resp.Header.Get("Last-Modified")),
+		LastModified: usableLastModified(resp.Header.Get("Last-Modified")),
 	}
 
 	if resp.StatusCode == http.StatusNotModified {
@@ -439,7 +462,9 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 		// behind a CDN commonly answer from different edges that stamp
 		// different ETags for the same content: writing on every value change
 		// would rewrite meta on every poll, which is the behaviour this whole
-		// path exists to avoid.
+		// path exists to avoid. Ignoring it is safe because a validator the
+		// server genuinely stops honouring produces a 200, and that path
+		// replaces both fields wholesale.
 		if gainedValidator(meta, validators) {
 			if meta.ETag == "" {
 				meta.ETag = validators.ETag

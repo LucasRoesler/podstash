@@ -602,7 +602,7 @@ func TestFetchFeedConditionalSendsValidators(t *testing.T) {
 	}
 
 	const etag = `"abc123"`
-	const lastMod = "Wed, 21 Oct 2026 07:28:00 GMT"
+	const lastMod = "Tue, 21 Oct 2025 07:28:00 GMT"
 
 	var gotINM, gotIMS string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -663,7 +663,7 @@ func TestFetchFeedConditionalKeepsValidatorsOnBare304(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prev := FeedValidators{ETag: `"kept"`, LastModified: "Wed, 21 Oct 2026 07:28:00 GMT"}
+	prev := FeedValidators{ETag: `"kept"`, LastModified: "Tue, 21 Oct 2025 07:28:00 GMT"}
 	_, next, err := FetchFeedConditional(srv.Client(), srv.URL, prev)
 	if !errors.Is(err, ErrFeedNotModified) {
 		t.Fatalf("err = %v, want ErrFeedNotModified", err)
@@ -1128,7 +1128,7 @@ func TestRefreshPodcastPersistsValidatorsCarriedThrough304(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMeta: %v", err)
 	}
-	meta.LastModified = "Wed, 21 Oct 2026 07:28:00 GMT"
+	meta.LastModified = "Tue, 21 Oct 2025 07:28:00 GMT"
 	if err := SaveMeta(dir, meta); err != nil {
 		t.Fatalf("SaveMeta: %v", err)
 	}
@@ -1340,7 +1340,7 @@ func TestRefreshPodcastAdoptsUpgradedValidatorsOn304(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	const lastMod = "Wed, 21 Oct 2026 07:28:00 GMT"
+	const lastMod = "Tue, 21 Oct 2025 07:28:00 GMT"
 	const strongETag = `"strong"`
 	serveETag := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1444,6 +1444,28 @@ func TestRefreshPodcastIgnoresAlternatingETagsOn304(t *testing.T) {
 		t.Fatalf("first refresh: %v", err)
 	}
 
+	// Seed a legacy key so any save on this path rewrites the file under the
+	// current key. Without it the byte-compare skip in atomicWriteJSON hides a
+	// save that stores an equivalent value, and a condition that writes on
+	// every edge change would look identical to one that never writes.
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	legacy := map[string]any{
+		"feed_url":        srv.URL,
+		"title":           meta.Title,
+		"etag":            meta.ETag,
+		"last_checked_at": "2025-08-01T12:00:00Z",
+	}
+	raw, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy meta: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, metaFilename), raw, 0644); err != nil {
+		t.Fatalf("write legacy meta: %v", err)
+	}
+
 	before := fileIdentity(t, filepath.Join(dir, metaFilename))
 	for i := range 6 {
 		if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
@@ -1453,5 +1475,188 @@ func TestRefreshPodcastIgnoresAlternatingETagsOn304(t *testing.T) {
 
 	if after := fileIdentity(t, filepath.Join(dir, metaFilename)); after != before {
 		t.Errorf("meta rewritten by an alternating ETag: inode %d -> %d", before, after)
+	}
+}
+
+// Ignoring value-only validator changes is safe because a stored validator the
+// server has genuinely stopped honouring produces a 200, and the full path
+// replaces it wholesale. Without that, latching would risk a permanently stale
+// validator.
+func TestRefreshPodcastRecoversFromAValidatorTheServerStopsAccepting(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	accepted := `"old"`
+	current := `"old"`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", current)
+		if r.Header.Get("If-None-Match") == accepted {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "recovers"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Recovers", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	// The server rotates for real and rejects what we hold.
+	accepted, current = `"new"`, `"new"`
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("refresh after rotation: %v", err)
+	}
+
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.ETag != `"new"` {
+		t.Errorf("ETag = %q, want %q replaced via the 200 path", meta.ETag, `"new"`)
+	}
+
+	// And the feed goes quiet again rather than refetching every poll.
+	before := fileIdentity(t, filepath.Join(dir, metaFilename))
+	for i := range 3 {
+		if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+			t.Fatalf("quiet refresh %d: %v", i+1, err)
+		}
+	}
+	if after := fileIdentity(t, filepath.Join(dir, metaFilename)); after != before {
+		t.Errorf("meta rewritten after recovery: inode %d -> %d", before, after)
+	}
+}
+
+// A future-dated Last-Modified must not be stored: an origin that honours
+// If-Modified-Since would answer 304 for everything until that date arrives,
+// so a feed stamped years ahead by a skewed clock would stop delivering
+// episodes with no way back.
+func TestFetchFeedConditionalDropsFutureLastModified(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	var serveDate string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified", serveDate)
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	past := time.Now().AddDate(0, 0, -1).UTC().Format(http.TimeFormat)
+	future := time.Now().AddDate(4, 0, 0).UTC().Format(http.TimeFormat)
+
+	serveDate = past
+	if _, validators, err := FetchFeedConditional(srv.Client(), srv.URL, FeedValidators{}); err != nil {
+		t.Fatalf("fetch with a past date: %v", err)
+	} else if validators.LastModified != past {
+		t.Errorf("past Last-Modified = %q, want it kept", validators.LastModified)
+	}
+
+	serveDate = future
+	if _, validators, err := FetchFeedConditional(srv.Client(), srv.URL, FeedValidators{}); err != nil {
+		t.Fatalf("fetch with a future date: %v", err)
+	} else if validators.LastModified != "" {
+		t.Errorf("future Last-Modified = %q, want dropped", validators.LastModified)
+	}
+}
+
+// An unparseable Last-Modified is kept: the origin may recognise the exact
+// bytes it sent even when Go cannot parse them.
+func TestFetchFeedConditionalKeepsUnparseableLastModified(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const odd = "not-a-http-date"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Last-Modified", odd)
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	_, validators, err := FetchFeedConditional(srv.Client(), srv.URL, FeedValidators{})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if validators.LastModified != odd {
+		t.Errorf("Last-Modified = %q, want %q kept", validators.LastModified, odd)
+	}
+}
+
+// The mirror of the ETag upgrade: a feed tracked only by ETag whose server
+// starts advertising Last-Modified on its 304s must latch that too.
+func TestRefreshPodcastAdoptsUpgradedLastModifiedOn304(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const etag = `"v1"`
+	lastMod := time.Now().AddDate(0, 0, -2).UTC().Format(http.TimeFormat)
+	serveLastMod := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", etag)
+		if serveLastMod {
+			w.Header().Set("Last-Modified", lastMod)
+		}
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "lm-upgrade"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "LM", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.LastModified != "" {
+		t.Fatalf("setup: LastModified = %q, want empty", meta.LastModified)
+	}
+
+	serveLastMod = true
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("upgrade refresh: %v", err)
+	}
+
+	meta, err = LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.LastModified != lastMod {
+		t.Errorf("LastModified = %q, want %q adopted from the 304", meta.LastModified, lastMod)
+	}
+	if meta.ETag != etag {
+		t.Errorf("ETag = %q, want %q left alone", meta.ETag, etag)
 	}
 }

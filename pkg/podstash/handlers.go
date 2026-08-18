@@ -80,6 +80,14 @@ func (app *App) handleHome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reconcile the heartbeat against the podcasts that actually exist, so a
+	// slug deleted while a mark was in flight cannot linger.
+	live := make(map[string]struct{}, len(podcasts))
+	for _, p := range podcasts {
+		live[p.Slug] = struct{}{}
+	}
+	app.Heartbeat.Retain(live)
+
 	var views []PodcastView
 	for _, p := range podcasts {
 		dir := PodcastDir(app.DataDir, p.Slug)
@@ -237,31 +245,33 @@ func (app *App) handleDeletePodcast(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+// markRefreshRequested records a user-requested refresh and reports whether the
+// podcast exists. Both happen under the per-podcast lock the delete handler
+// holds, so a delete cannot land between the check and the mark. The lock must
+// be released before the refresh itself runs, because refreshPodcast takes it
+// too, which is why this is separate from the goroutine below.
+//
+// The request is the check, so it is recorded now rather than when the refresh
+// finishes.
+func (app *App) markRefreshRequested(slug string) bool {
+	mu := podcastMu(slug)
+	mu.Lock()
+	defer mu.Unlock()
+
+	if _, err := LoadMeta(PodcastDir(app.DataDir, slug)); err != nil {
+		return false
+	}
+	app.Heartbeat.Mark(slug, time.Now().UTC())
+	return true
+}
+
 func (app *App) handleRefreshPodcast(w http.ResponseWriter, r *http.Request) {
 	slug, ok := slugParam(w, r)
 	if !ok {
 		return
 	}
 
-	// Verify the podcast exists and record the check under the same lock the
-	// delete handler holds, so a concurrent delete cannot land between the two
-	// and have this Mark reinsert the slug it just forgot. The lock is released
-	// before the refresh starts, because ForceRefreshPodcast takes it too.
-	dir := PodcastDir(app.DataDir, slug)
-	notFound := func() bool {
-		mu := podcastMu(slug)
-		mu.Lock()
-		defer mu.Unlock()
-
-		if _, err := LoadMeta(dir); err != nil {
-			return true
-		}
-		// The request itself is the check, so it is recorded now rather than
-		// when the refresh finishes.
-		app.Heartbeat.Mark(slug, time.Now().UTC())
-		return false
-	}()
-	if notFound {
+	if !app.markRefreshRequested(slug) {
 		http.NotFound(w, r)
 		return
 	}

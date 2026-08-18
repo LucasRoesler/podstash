@@ -81,3 +81,27 @@ func TestPollHeartbeatForgetIsNotUndoneByLaterMark(t *testing.T) {
 		t.Error("deleted slug still present in the heartbeat map")
 	}
 }
+
+// Marks and deletes race on both the poller and the handler path, so the map is
+// reconciled against the podcasts that actually exist rather than relying on
+// every Mark being ordered against every Forget.
+func TestPollHeartbeatRetain(t *testing.T) {
+	h := NewPollHeartbeat()
+	now := time.Now().UTC()
+	h.Mark("kept", now)
+	h.Mark("deleted-mid-mark", now)
+
+	h.Retain(map[string]struct{}{"kept": {}})
+
+	if _, ok := h.LastPolled("kept"); !ok {
+		t.Error("Retain dropped a live podcast")
+	}
+	if _, ok := h.LastPolled("deleted-mid-mark"); ok {
+		t.Error("Retain kept a podcast that no longer exists")
+	}
+}
+
+func TestPollHeartbeatRetainNilIsSafe(t *testing.T) {
+	var h *PollHeartbeat
+	h.Retain(map[string]struct{}{"anything": {}})
+}

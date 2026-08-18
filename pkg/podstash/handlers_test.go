@@ -942,3 +942,35 @@ func TestRefreshAndDeleteDoNotLeakHeartbeatEntry(t *testing.T) {
 		}
 	}
 }
+
+// The poller marks after releasing the per-podcast lock, so a delete landing in
+// that gap leaves a stale entry no Forget will ever remove. Rendering the home
+// page reconciles the map against the podcasts that exist, which also stops a
+// re-added podcast inheriting its predecessor's poll time.
+func TestHandleHomeDropsHeartbeatEntriesForDeletedPodcasts(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	slug := "live"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/f.xml", Title: "Live"}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	app.Heartbeat.Mark(slug, time.Now().UTC())
+	// The state a poller mark racing a delete leaves behind.
+	app.Heartbeat.Mark("ghost", time.Now().UTC())
+
+	req := httptest.NewRequest("GET", "/", nil)
+	app.handleHome(httptest.NewRecorder(), req)
+
+	if _, ok := app.Heartbeat.LastPolled("ghost"); ok {
+		t.Error("stale entry for a deleted podcast survived a home page render")
+	}
+	if _, ok := app.Heartbeat.LastPolled(slug); !ok {
+		t.Error("entry for a live podcast was dropped")
+	}
+}

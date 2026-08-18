@@ -483,7 +483,7 @@ func TestSaveAndLoadMetaValidators(t *testing.T) {
 		Title:        "Validators",
 		AddedAt:      time.Now().Truncate(time.Second),
 		ETag:         `W/"694005d4b2cf6d966ab8b63d882c2959"`,
-		LastModified: "Thu, 13 Aug 2026 20:41:57 GMT",
+		LastModified: "Wed, 13 Aug 2025 20:41:57 GMT",
 	}
 
 	if err := SaveMeta(dir, original); err != nil {

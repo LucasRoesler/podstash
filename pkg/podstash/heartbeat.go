@@ -1,6 +1,7 @@
 package podstash
 
 import (
+	"maps"
 	"sync"
 	"time"
 )
@@ -41,6 +42,26 @@ func (h *PollHeartbeat) LastPolled(slug string) (time.Time, bool) {
 	defer h.mu.RUnlock()
 	t, ok := h.times[slug]
 	return t, ok
+}
+
+// Retain drops every entry whose slug is not in keep.
+//
+// Marks and deletes race by nature: the poller and the refresh handler both
+// mark after releasing the per-podcast lock, so a delete landing in that gap is
+// followed by a Mark that resurrects the slug. Rather than widening locks
+// across those paths, the map is reconciled against the authoritative podcast
+// list on read. That also stops a re-added podcast inheriting a poll time from
+// its predecessor.
+func (h *PollHeartbeat) Retain(keep map[string]struct{}) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	maps.DeleteFunc(h.times, func(slug string, _ time.Time) bool {
+		_, ok := keep[slug]
+		return !ok
+	})
 }
 
 // Forget drops a podcast's entry, for when the podcast is deleted.
