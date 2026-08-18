@@ -243,18 +243,28 @@ func (app *App) handleRefreshPodcast(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the podcast exists before launching background work.
+	// Verify the podcast exists and record the check under the same lock the
+	// delete handler holds, so a concurrent delete cannot land between the two
+	// and have this Mark reinsert the slug it just forgot. The lock is released
+	// before the refresh starts, because ForceRefreshPodcast takes it too.
 	dir := PodcastDir(app.DataDir, slug)
-	if _, err := LoadMeta(dir); err != nil {
+	notFound := func() bool {
+		mu := podcastMu(slug)
+		mu.Lock()
+		defer mu.Unlock()
+
+		if _, err := LoadMeta(dir); err != nil {
+			return true
+		}
+		// The request itself is the check, so it is recorded now rather than
+		// when the refresh finishes.
+		app.Heartbeat.Mark(slug, time.Now().UTC())
+		return false
+	}()
+	if notFound {
 		http.NotFound(w, r)
 		return
 	}
-
-	// Marked here rather than inside the goroutine: a delete landing while the
-	// refresh is in flight calls Forget, and a later Mark would reinsert the
-	// deleted slug into the map for the life of the process. The podcast is
-	// known to exist at this point, and the request itself is the check.
-	app.Heartbeat.Mark(slug, time.Now().UTC())
 
 	go func() {
 		// A person asked for this refresh, so ignore cache validators: a

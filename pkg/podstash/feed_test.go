@@ -737,9 +737,12 @@ func TestRefreshPodcastStoresAndReusesValidators(t *testing.T) {
 		t.Errorf("full feed bodies sent = %d, want 1 (second poll should be a 304)", fullBodies)
 	}
 
-	// A 304 must leave the meta file completely untouched: the validators on
-	// disk already produced the 304, and recording the poll time here is what
-	// kept spinning disks awake. The poll time lives in PollHeartbeat instead.
+	// A 304 leaves the meta file untouched whenever the stored validators
+	// already cover what the server offers, which is the ordinary case and the
+	// one this server models. Recording the poll time here is what kept
+	// spinning disks awake; the poll time lives in PollHeartbeat instead. A
+	// 304 offering a validator kind we lack does write, covered separately by
+	// TestRefreshPodcastAdoptsUpgradedValidatorsOn304.
 	metaPath := filepath.Join(dir, metaFilename)
 	before := fileIdentity(t, metaPath)
 
@@ -1397,5 +1400,58 @@ func TestRefreshPodcastAdoptsUpgradedValidatorsOn304(t *testing.T) {
 	}
 	if after := fileIdentity(t, filepath.Join(dir, metaFilename)); after != metaBefore {
 		t.Errorf("meta rewritten on a quiet poll after adopting validators: inode %d -> %d", metaBefore, after)
+	}
+}
+
+// Origins behind a CDN answer from different edges that stamp different ETags
+// for the same content. Writing whenever the returned validator differs would
+// rewrite meta on every poll for those feeds, which is the behaviour this path
+// exists to avoid.
+func TestRefreshPodcastIgnoresAlternatingETagsOn304(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	responses := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		responses++
+		// Two edges, each stamping its own ETag, both agreeing the feed is
+		// unchanged for any validator the client presents.
+		edge := `"replica-a"`
+		if responses%2 == 0 {
+			edge = `"replica-b"`
+		}
+		w.Header().Set("ETag", edge)
+		if r.Header.Get("If-None-Match") != "" {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "cdn"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "CDN", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	before := fileIdentity(t, filepath.Join(dir, metaFilename))
+	for i := range 6 {
+		if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+			t.Fatalf("quiet refresh %d: %v", i+1, err)
+		}
+	}
+
+	if after := fileIdentity(t, filepath.Join(dir, metaFilename)); after != before {
+		t.Errorf("meta rewritten by an alternating ETag: inode %d -> %d", before, after)
 	}
 }

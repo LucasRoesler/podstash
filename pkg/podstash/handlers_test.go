@@ -3,6 +3,7 @@ package podstash
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -898,5 +900,45 @@ func TestHomeTemplateActivityLabelStates(t *testing.T) {
 				t.Errorf(`"updated" present = %v, want %v`, got, tt.wantUpdated)
 			}
 		})
+	}
+}
+
+// A refresh and a delete arriving together must not leave the deleted slug in
+// the heartbeat map: both handlers take the per-podcast lock, so the Mark
+// either precedes the Forget or never happens.
+func TestRefreshAndDeleteDoNotLeakHeartbeatEntry(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	for i := range 20 {
+		slug := fmt.Sprintf("racer-%d", i)
+		dir := PodcastDir(dataDir, slug)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/f.xml", Title: slug}); err != nil {
+			t.Fatalf("SaveMeta: %v", err)
+		}
+
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			req := httptest.NewRequest("POST", "/podcasts/"+slug+"/refresh", nil)
+			req.SetPathValue("slug", slug)
+			app.handleRefreshPodcast(httptest.NewRecorder(), req)
+		})
+		wg.Go(func() {
+			req := httptest.NewRequest("POST", "/podcasts/"+slug+"/delete", nil)
+			req.SetPathValue("slug", slug)
+			app.handleDeletePodcast(httptest.NewRecorder(), req)
+		})
+		wg.Wait()
+
+		// The podcast is gone, so nothing may still be tracking it.
+		if _, err := os.Stat(dir); err == nil {
+			continue // delete lost the race; nothing to assert
+		}
+		if _, ok := app.Heartbeat.LastPolled(slug); ok {
+			t.Fatalf("%s: deleted podcast still in the heartbeat map", slug)
+		}
 	}
 }

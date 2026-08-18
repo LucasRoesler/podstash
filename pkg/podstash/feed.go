@@ -372,6 +372,17 @@ func ForceRefreshPodcast(client HTTPClient, dataDir string, slug string) (int, e
 	return refreshPodcast(client, dataDir, slug, true)
 }
 
+// gainedValidator reports whether a 304 response offers a validator the stored
+// metadata lacks entirely. Only that is worth a write: it makes future
+// conditional requests stronger, where swapping one working validator for
+// another does not.
+func gainedValidator(meta *PodcastMeta, next FeedValidators) bool {
+	if meta.ETag == "" && next.ETag != "" {
+		return true
+	}
+	return meta.LastModified == "" && next.LastModified != ""
+}
+
 // RefreshPodcast fetches the RSS feed for a podcast and adds any new episodes
 // to the index. Returns the number of new episodes added.
 //
@@ -417,15 +428,25 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 		// The feed is unchanged, so the index is left alone and the poll time
 		// goes to PollHeartbeat, which documents why it is not written here.
 		//
-		// Validators are the exception. A 304 can carry ones we do not hold,
-		// most importantly a server that has gained a strong ETag for a feed
-		// we only track by Last-Modified. Nothing else would ever store it,
-		// since this branch is the only one reached while the feed is quiet,
-		// so the conditional request would stay permanently weaker. Saving
-		// only on a difference keeps the quiet path write-free.
-		if validators.ETag != meta.ETag || validators.LastModified != meta.LastModified {
-			meta.ETag = validators.ETag
-			meta.LastModified = validators.LastModified
+		// Validators are the exception, but only when the 304 offers a kind we
+		// do not have at all: a server that has gained a strong ETag for a
+		// feed we track only by Last-Modified would otherwise never have it
+		// stored, since this branch is the only one reached while the feed is
+		// quiet, leaving the conditional request permanently weaker.
+		//
+		// A validator whose value merely changed is ignored. The stored one
+		// just earned this 304, so replacing it buys nothing, and origins
+		// behind a CDN commonly answer from different edges that stamp
+		// different ETags for the same content: writing on every value change
+		// would rewrite meta on every poll, which is the behaviour this whole
+		// path exists to avoid.
+		if gainedValidator(meta, validators) {
+			if meta.ETag == "" {
+				meta.ETag = validators.ETag
+			}
+			if meta.LastModified == "" {
+				meta.LastModified = validators.LastModified
+			}
 			if err := SaveMeta(dir, meta); err != nil {
 				return 0, fmt.Errorf("refresh %s: %w", slug, err)
 			}
