@@ -812,3 +812,41 @@ func TestHandleHealthzReadOnlyDataDir(t *testing.T) {
 		t.Errorf("status = %d, want 200", w.Code)
 	}
 }
+
+// Before the first poll after a restart there is no in-memory poll time, so the
+// home page falls back to the persisted last-change time and labels it as such.
+func TestHandleHomeFallsBackToLastChangedAt(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	slug := "show"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	changed := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/f.xml", Title: "Show", LastChangedAt: changed}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	// No poll recorded yet: the change time is shown, marked as not polled.
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	app.handleHome(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "updated") {
+		t.Errorf("home page did not label the fallback as an update time:\n%s", body)
+	}
+
+	// After a poll, the live time is shown instead.
+	polled := time.Now().UTC()
+	app.Heartbeat.Mark(slug, polled)
+
+	w = httptest.NewRecorder()
+	app.handleHome(w, req)
+	if body := w.Body.String(); !strings.Contains(body, "checked") {
+		t.Errorf("home page did not show the poll time after a poll:\n%s", body)
+	}
+}

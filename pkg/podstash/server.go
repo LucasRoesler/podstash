@@ -43,6 +43,7 @@ func Run(cfg Config) {
 		Client:          &http.Client{Timeout: cfg.HTTPTimeout},
 		Tmpl:            loadTemplates(),
 		DownloadWorkers: cfg.DownloadWorkers,
+		Heartbeat:       NewPollHeartbeat(),
 	}
 
 	mux := http.NewServeMux()
@@ -162,6 +163,7 @@ func pollOnce(app *App) {
 			slog.Error("poll: refresh failed", "podcast", p.Slug, "error", err)
 			continue
 		}
+		app.Heartbeat.Mark(p.Slug, time.Now().UTC())
 		if added > 0 {
 			slog.Info("poll: new episodes", "podcast", p.Slug, "added", added)
 		}

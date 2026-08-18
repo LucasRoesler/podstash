@@ -21,6 +21,10 @@ type App struct {
 	Client          HTTPClient
 	Tmpl            map[string]*template.Template
 	DownloadWorkers int
+
+	// Heartbeat records poll times in memory. May be nil, in which case the
+	// home page falls back to each podcast's last change time.
+	Heartbeat *PollHeartbeat
 }
 
 // PodcastView holds data for rendering a podcast in templates.
@@ -28,6 +32,13 @@ type PodcastView struct {
 	Meta               PodcastMeta
 	TotalEpisodes      int
 	DownloadedEpisodes int
+
+	// LastActivity is what the "checked"/"updated" label renders. Polled is
+	// true when it is a poll time from this process, false when it is the
+	// persisted last-change time, which is all we have before the first poll
+	// after a restart.
+	LastActivity time.Time
+	Polled       bool
 }
 
 // PodcastDetailView holds data for the podcast detail page.
@@ -80,10 +91,16 @@ func (app *App) handleHome(w http.ResponseWriter, r *http.Request) {
 				downloaded++
 			}
 		}
+		activity, polled := app.Heartbeat.LastPolled(p.Slug)
+		if !polled {
+			activity = p.LastChangedAt
+		}
 		views = append(views, PodcastView{
 			Meta:               p,
 			TotalEpisodes:      total,
 			DownloadedEpisodes: downloaded,
+			LastActivity:       activity,
+			Polled:             polled,
 		})
 	}
 
@@ -214,6 +231,7 @@ func (app *App) handleDeletePodcast(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to delete: %v", err), http.StatusInternalServerError)
 		return
 	}
+	app.Heartbeat.Forget(slug)
 
 	slog.Info("podcast deleted", "podcast", slug)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -240,6 +258,7 @@ func (app *App) handleRefreshPodcast(w http.ResponseWriter, r *http.Request) {
 			slog.Error("refresh failed", "podcast", slug, "error", err)
 			return
 		}
+		app.Heartbeat.Mark(slug, time.Now().UTC())
 		slog.Info("refresh complete", "podcast", slug, "added", added)
 	}()
 

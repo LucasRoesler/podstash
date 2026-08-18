@@ -267,8 +267,8 @@ func TestRefreshPodcast(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMeta: %v", err)
 	}
-	if updatedMeta.LastCheckedAt.IsZero() {
-		t.Error("LastCheckedAt should be set after refresh")
+	if updatedMeta.LastChangedAt.IsZero() {
+		t.Error("LastChangedAt should be set after a refresh that added episodes")
 	}
 
 	// Verify metadata from feed was applied.
@@ -736,35 +736,22 @@ func TestRefreshPodcastStoresAndReusesValidators(t *testing.T) {
 		t.Errorf("full feed bodies sent = %d, want 1 (second poll should be a 304)", fullBodies)
 	}
 
-	// The 304 path must still persist meta. Comparing against the value the
-	//200 path stored would pass even if the 304 branch saved nothing, so
-	// LastCheckedAt is forced backwards on disk first: only a save performed
-	// by the 304 branch itself can move it forward again.
-	meta, err = LoadMeta(dir)
-	if err != nil {
-		t.Fatalf("LoadMeta: %v", err)
-	}
-	// Poison LastCheckedAt only: it does not affect request routing, so the
-	// next refresh still takes the 304 path, and only a save performed by that
-	// branch can move it forward again. Poisoning the ETag instead would send
-	// a validator the server rejects, turning the very poll under test into a
-	// 200 and testing nothing.
-	stale := time.Now().UTC().Add(-24 * time.Hour)
-	meta.LastCheckedAt = stale
-	if err := SaveMeta(dir, meta); err != nil {
-		t.Fatalf("SaveMeta: %v", err)
-	}
+	// A 304 must leave the meta file completely untouched: the validators on
+	// disk already produced the 304, and recording the poll time here is what
+	// kept spinning disks awake. The poll time lives in PollHeartbeat instead.
+	metaPath := filepath.Join(dir, metaFilename)
+	before := fileIdentity(t, metaPath)
 
 	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
 		t.Fatalf("third refresh: %v", err)
 	}
 
+	if after := fileIdentity(t, metaPath); after != before {
+		t.Errorf("meta rewritten on a 304: inode %d -> %d", before, after)
+	}
 	meta, err = LoadMeta(dir)
 	if err != nil {
 		t.Fatalf("LoadMeta: %v", err)
-	}
-	if !meta.LastCheckedAt.After(stale) {
-		t.Errorf("LastCheckedAt = %v, want advanced past %v by the 304 path", meta.LastCheckedAt, stale)
 	}
 	if meta.ETag != etag {
 		t.Errorf("ETag after 304 = %q, want %q", meta.ETag, etag)
@@ -1152,5 +1139,121 @@ func TestRefreshPodcastPersistsValidatorsCarriedThrough304(t *testing.T) {
 	}
 	if meta.ETag != etag {
 		t.Errorf("ETag = %q, want %q carried through the 304", meta.ETag, etag)
+	}
+}
+
+// The point of the change: a poll of an unchanged feed must touch no file at
+// all. Previously LastCheckedAt moved on every poll, so meta was rewritten each
+// time and the containing directory was dirtied, which blocks disk spindown
+// (issue #8).
+func TestRefreshPodcastUnchangedFeedWritesNothing(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const etag = `"v1"`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "quiet"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Quiet", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+
+	metaBefore := fileIdentity(t, filepath.Join(dir, metaFilename))
+	indexBefore := fileIdentity(t, filepath.Join(dir, indexFilename))
+	dirBefore, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat podcast dir: %v", err)
+	}
+	time.Sleep(10 * time.Millisecond)
+
+	// Several quiet polls in a row.
+	for i := range 3 {
+		if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+			t.Fatalf("quiet refresh %d: %v", i+1, err)
+		}
+	}
+
+	if after := fileIdentity(t, filepath.Join(dir, metaFilename)); after != metaBefore {
+		t.Errorf("meta rewritten on a quiet poll: inode %d -> %d", metaBefore, after)
+	}
+	if after := fileIdentity(t, filepath.Join(dir, indexFilename)); after != indexBefore {
+		t.Errorf("index rewritten on a quiet poll: inode %d -> %d", indexBefore, after)
+	}
+	dirAfter, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat podcast dir: %v", err)
+	}
+	if !dirAfter.ModTime().Equal(dirBefore.ModTime()) {
+		t.Errorf("podcast dir mtime changed: %v -> %v, a quiet poll must write nothing",
+			dirBefore.ModTime(), dirAfter.ModTime())
+	}
+}
+
+// LastChangedAt must move only when the feed actually delivers something new,
+// not on every successful fetch.
+func TestRefreshPodcastLastChangedAtOnlyMovesOnChange(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	// Always 200, never a 304, so only the "was anything added" logic can
+	// keep LastChangedAt still.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "changes"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Changes", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	first, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if first.LastChangedAt.IsZero() {
+		t.Fatal("LastChangedAt not set by the refresh that added episodes")
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+	second, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if !second.LastChangedAt.Equal(first.LastChangedAt) {
+		t.Errorf("LastChangedAt moved on a 200 that added nothing: %v -> %v",
+			first.LastChangedAt, second.LastChangedAt)
 	}
 }

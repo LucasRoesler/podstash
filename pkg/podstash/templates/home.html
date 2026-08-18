@@ -22,7 +22,8 @@
             </div>
             <p class="text-light mt-2" style="margin-bottom:0">
               {{.DownloadedEpisodes}} / {{.TotalEpisodes}} episodes
-              · checked {{formatTime .Meta.LastCheckedAt}}
+              {{if .Polled}}· checked {{formatTime .LastActivity}}
+              {{else if not .LastActivity.IsZero}}· updated {{formatTime .LastActivity}}{{end}}
             </p>
           </div>
         </div>

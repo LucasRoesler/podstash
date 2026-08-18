@@ -28,14 +28,19 @@ var multiHyphenRe = regexp.MustCompile(`-{2,}`)
 
 // PodcastMeta holds podcast-level metadata, stored in .podstash.meta.json.
 type PodcastMeta struct {
-	FeedURL       string    `json:"feed_url"`
-	Title         string    `json:"title"`
-	Author        string    `json:"author"`
-	Description   string    `json:"description"`
-	ImageURL      string    `json:"image_url"`
-	AddedAt       time.Time `json:"added_at"`
-	LastCheckedAt time.Time `json:"last_checked_at"`
-	Paused        bool      `json:"paused"`
+	FeedURL     string    `json:"feed_url"`
+	Title       string    `json:"title"`
+	Author      string    `json:"author"`
+	Description string    `json:"description"`
+	ImageURL    string    `json:"image_url"`
+	AddedAt     time.Time `json:"added_at"`
+	Paused      bool      `json:"paused"`
+
+	// LastChangedAt is when the feed last returned something new, not when it
+	// was last polled. A per-poll timestamp would rewrite this file on every
+	// poll even for a dormant feed, which blocks disk spindown (issue #8).
+	// The poll time is tracked in memory by PollHeartbeat instead.
+	LastChangedAt time.Time `json:"last_changed_at,omitzero"`
 
 	// SkipPatterns is a list of regex patterns. Episodes whose title or
 	// description matches any pattern are recorded in the index but skipped
@@ -99,6 +104,20 @@ func LoadMeta(dir string) (*PodcastMeta, error) {
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, fmt.Errorf("parse meta: %w", err)
 	}
+
+	// Meta written before LastChangedAt existed carries last_checked_at, which
+	// was set on every poll. It is the closest thing to a change time those
+	// files have, so adopt it rather than showing the zero time; the next
+	// refresh replaces it with a real change time.
+	if meta.LastChangedAt.IsZero() {
+		var legacy struct {
+			LastCheckedAt time.Time `json:"last_checked_at"`
+		}
+		if err := json.Unmarshal(data, &legacy); err == nil {
+			meta.LastChangedAt = legacy.LastCheckedAt
+		}
+	}
+
 	meta.Slug = filepath.Base(dir)
 	return &meta, nil
 }

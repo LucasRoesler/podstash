@@ -414,15 +414,11 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 
 	feed, validators, err := FetchFeedConditional(client, meta.FeedURL, prev)
 	if errors.Is(err, ErrFeedNotModified) {
-		// The feed is unchanged and the index is present, so neither can have
-		// changed: skip loading and rewriting the index. Meta is still saved so
-		// LastCheckedAt reflects the poll.
-		meta.LastCheckedAt = time.Now().UTC()
-		meta.ETag = validators.ETag
-		meta.LastModified = validators.LastModified
-		if err := SaveMeta(dir, meta); err != nil {
-			return 0, fmt.Errorf("refresh %s: %w", slug, err)
-		}
+		// Nothing changed, so nothing is written: the index is untouched, and
+		// the validators on disk are by definition the ones that just produced
+		// this 304. Writing meta here purely to record the poll time is what
+		// kept spinning disks awake (issue #8); the poll time lives in
+		// PollHeartbeat instead.
 		return 0, nil
 	}
 	if err != nil {
@@ -440,7 +436,6 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 	if img := feed.Channel.ImageURL(); img != "" {
 		meta.ImageURL = img
 	}
-	meta.LastCheckedAt = time.Now().UTC()
 	meta.ETag = validators.ETag
 	meta.LastModified = validators.LastModified
 
@@ -488,6 +483,12 @@ func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) 
 		added++
 	}
 
+	if added > 0 {
+		meta.LastChangedAt = time.Now().UTC()
+	}
+
+	// Both saves skip the write when the bytes are unchanged, so a 200 that
+	// turns out to carry nothing new still touches no disk.
 	if err := SaveMeta(dir, meta); err != nil {
 		return added, fmt.Errorf("refresh %s: %w", slug, err)
 	}

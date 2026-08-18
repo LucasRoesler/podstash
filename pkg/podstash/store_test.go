@@ -74,7 +74,7 @@ func TestSaveAndLoadMeta(t *testing.T) {
 		Description:   "A test podcast.",
 		ImageURL:      "https://example.com/image.jpg",
 		AddedAt:       now,
-		LastCheckedAt: now,
+		LastChangedAt: now,
 		Paused:        false,
 	}
 
@@ -518,5 +518,72 @@ func TestSaveMetaOmitsEmptyValidators(t *testing.T) {
 		if strings.Contains(string(data), key) {
 			t.Errorf("meta contains %q key when validator is empty:\n%s", key, data)
 		}
+	}
+}
+
+// Meta written before the LastChangedAt rename carries last_checked_at. It is
+// the closest thing to a change time those files have, so it must be adopted
+// rather than leaving the field zero and showing nothing in the UI.
+func TestLoadMetaAdoptsLegacyLastCheckedAt(t *testing.T) {
+	dir := t.TempDir()
+	legacy := `{
+  "feed_url": "https://example.com/feed.xml",
+  "title": "Legacy",
+  "last_checked_at": "2026-08-01T12:00:00Z"
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, metaFilename), []byte(legacy), 0644); err != nil {
+		t.Fatalf("write legacy meta: %v", err)
+	}
+
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+
+	want := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	if !meta.LastChangedAt.Equal(want) {
+		t.Errorf("LastChangedAt = %v, want %v adopted from last_checked_at", meta.LastChangedAt, want)
+	}
+}
+
+// A file carrying both keys must prefer the current one.
+func TestLoadMetaPrefersLastChangedAtOverLegacy(t *testing.T) {
+	dir := t.TempDir()
+	both := `{
+  "feed_url": "https://example.com/feed.xml",
+  "title": "Both",
+  "last_checked_at": "2026-08-01T12:00:00Z",
+  "last_changed_at": "2026-08-15T09:30:00Z"
+}
+`
+	if err := os.WriteFile(filepath.Join(dir, metaFilename), []byte(both), 0644); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+
+	want := time.Date(2026, 8, 15, 9, 30, 0, 0, time.UTC)
+	if !meta.LastChangedAt.Equal(want) {
+		t.Errorf("LastChangedAt = %v, want %v", meta.LastChangedAt, want)
+	}
+}
+
+func TestSaveAndLoadMetaLastChangedAt(t *testing.T) {
+	dir := t.TempDir()
+	want := time.Now().UTC().Truncate(time.Second)
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/f.xml", Title: "T", LastChangedAt: want}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if !meta.LastChangedAt.Equal(want) {
+		t.Errorf("LastChangedAt = %v, want %v", meta.LastChangedAt, want)
 	}
 }
