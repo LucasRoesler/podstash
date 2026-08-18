@@ -41,6 +41,20 @@ type FeedValidators struct {
 	LastModified string
 }
 
+// maxValidatorLen bounds a stored validator. Real ones are tens of bytes (an
+// ETag is a hash, Last-Modified a fixed-width date), but response headers may
+// be far larger, and these are persisted to disk and resent on every poll.
+const maxValidatorLen = 512
+
+// boundedValidator drops a validator too long to be genuine. Dropping one costs
+// a full fetch on the next poll, which is what would happen without it anyway.
+func boundedValidator(v string) string {
+	if len(v) > maxValidatorLen {
+		return ""
+	}
+	return v
+}
+
 // RSS XML structures
 
 type RSSFeed struct {
@@ -174,8 +188,8 @@ func FetchFeedConditional(client HTTPClient, url string, prev FeedValidators) (*
 	defer resp.Body.Close()
 
 	next := FeedValidators{
-		ETag:         resp.Header.Get("ETag"),
-		LastModified: resp.Header.Get("Last-Modified"),
+		ETag:         boundedValidator(resp.Header.Get("ETag")),
+		LastModified: boundedValidator(resp.Header.Get("Last-Modified")),
 	}
 
 	if resp.StatusCode == http.StatusNotModified {

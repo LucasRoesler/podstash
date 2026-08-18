@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -471,4 +472,51 @@ func readOnlyPodcastsDir(t *testing.T) string {
 	}
 	t.Cleanup(func() { _ = os.Chmod(podcasts, 0755) })
 	return dir
+}
+
+// The conditional-request validators must survive a save/load cycle, since a
+// restart otherwise refetches every feed in full.
+func TestSaveAndLoadMetaValidators(t *testing.T) {
+	dir := t.TempDir()
+	original := &PodcastMeta{
+		FeedURL:      "https://example.com/feed.xml",
+		Title:        "Validators",
+		AddedAt:      time.Now().Truncate(time.Second),
+		ETag:         `W/"694005d4b2cf6d966ab8b63d882c2959"`,
+		LastModified: "Thu, 13 Aug 2026 20:41:57 GMT",
+	}
+
+	if err := SaveMeta(dir, original); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+	loaded, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+
+	if loaded.ETag != original.ETag {
+		t.Errorf("ETag = %q, want %q", loaded.ETag, original.ETag)
+	}
+	if loaded.LastModified != original.LastModified {
+		t.Errorf("LastModified = %q, want %q", loaded.LastModified, original.LastModified)
+	}
+}
+
+// Meta without validators must not write the keys at all, so a file written by
+// an older version round-trips unchanged.
+func TestSaveMetaOmitsEmptyValidators(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.com/feed.xml", Title: "No Validators"}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, metaFilename))
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	for _, key := range []string{"etag", "last_modified"} {
+		if strings.Contains(string(data), key) {
+			t.Errorf("meta contains %q key when validator is empty:\n%s", key, data)
+		}
+	}
 }

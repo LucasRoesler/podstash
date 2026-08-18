@@ -792,3 +792,64 @@ func TestRefreshPodcastNotModifiedPreservesIndex(t *testing.T) {
 		t.Errorf("episodes = %d, want %d unchanged across a 304", len(after.Episodes), len(before.Episodes))
 	}
 }
+
+// A server that stops sending validators must not leave the old ones stored:
+// echoing a validator the server no longer recognises would be meaningless at
+// best and could suppress a real update at worst. Only the 304 branch carries
+// validators forward; a 200 always takes them fresh from the response.
+func TestFetchFeedConditionalClearsValidatorsWhenServerStopsSendingThem(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	sendETag := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if sendETag {
+			w.Header().Set("ETag", `"v1"`)
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	_, first, err := FetchFeedConditional(srv.Client(), srv.URL, FeedValidators{})
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if first.ETag != `"v1"` {
+		t.Fatalf("ETag = %q, want %q", first.ETag, `"v1"`)
+	}
+
+	sendETag = false
+	_, second, err := FetchFeedConditional(srv.Client(), srv.URL, first)
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if second.ETag != "" {
+		t.Errorf("stale ETag retained on 200: %q, want cleared", second.ETag)
+	}
+}
+
+// Validators are persisted and resent every poll, so an implausibly long one
+// from a hostile or broken server is dropped rather than stored.
+func TestFetchFeedConditionalDropsOversizedValidators(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	huge := `"` + strings.Repeat("a", maxValidatorLen) + `"`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", huge)
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	_, validators, err := FetchFeedConditional(srv.Client(), srv.URL, FeedValidators{})
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if validators.ETag != "" {
+		t.Errorf("oversized ETag stored (%d bytes), want dropped", len(validators.ETag))
+	}
+}
