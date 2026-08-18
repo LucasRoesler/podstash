@@ -1032,7 +1032,45 @@ func TestPodcastLocksDoNotAccumulate(t *testing.T) {
 		app.handleDeletePodcast(httptest.NewRecorder(), req)
 	}
 
-	if got := podcastLockCount(); got != 0 {
-		t.Errorf("lock count after 50 add/delete cycles = %d, want 0", got)
+	// Wait rather than assert directly: a handler may leave a detached
+	// goroutine holding a lock, and this must not pass or fail on its timing.
+	waitForPodcastLockCount(t, 0)
+}
+
+// The refresh handler returns while a detached goroutine still holds the lock,
+// so the entry outlives the request. It must still be released once that
+// goroutine finishes, rather than pinning the slug for the life of the process.
+func TestRefreshHandlerReleasesItsLockAfterTheGoroutineFinishes(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	app.Client = srv.Client()
+
+	slug := "detached"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
 	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Detached"}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/podcasts/"+slug+"/refresh", nil)
+	req.SetPathValue("slug", slug)
+	w := httptest.NewRecorder()
+	app.handleRefreshPodcast(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", w.Code)
+	}
+
+	// The handler has returned, but the refresh is still in flight.
+	close(release)
+	waitForPodcastLockCount(t, 0)
 }

@@ -589,6 +589,25 @@ func TestSaveAndLoadMetaLastChangedAt(t *testing.T) {
 	}
 }
 
+// waitForPodcastLockCount waits for the lock map to reach want. Handlers can
+// leave a detached goroutine holding a lock (handleRefreshPodcast spawns one),
+// so asserting the count directly would depend on that goroutine having
+// happened to finish rather than on any synchronisation.
+func waitForPodcastLockCount(t *testing.T, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := podcastLockCount()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("lock count = %d, want %d after 2s", got, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 // The lock map must not grow for the life of the process: a podcast that is
 // deleted, or simply never touched again, should leave nothing behind.
 func TestLockPodcastReleasesItsEntry(t *testing.T) {
