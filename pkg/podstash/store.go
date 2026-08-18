@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -20,8 +21,12 @@ import (
 const (
 	metaFilename  = ".podstash.meta.json"
 	indexFilename = ".podstash.index.json"
-	podcastsDir   = "podcasts"
-	maxSlugLen    = 80
+
+	// legacyHealthcheckFilename is the probe written by pre-issue-#8 versions
+	// on every /healthz request; removed at startup, never written.
+	legacyHealthcheckFilename = ".healthcheck"
+	podcastsDir               = "podcasts"
+	maxSlugLen                = 80
 )
 
 var multiHyphenRe = regexp.MustCompile(`-{2,}`)
@@ -227,10 +232,19 @@ func ValidSlug(slug string) bool {
 // and removing a probe file. Called once at startup: a data directory that is
 // missing or read-only is a misconfigured mount, and failing immediately beats
 // surfacing it later as a failed download.
+//
+// The probe name is unique per call, so a leftover from an earlier run can
+// never make a writable directory look unwritable and abort startup.
 func CheckDataDirWritable(dataDir string) error {
-	probe := filepath.Join(dataDir, podcastsDir, ".healthcheck")
-	if err := os.WriteFile(probe, nil, 0644); err != nil {
+	f, err := os.CreateTemp(filepath.Join(dataDir, podcastsDir), ".podstash-writecheck-*")
+	if err != nil {
 		return fmt.Errorf("data dir not writable: %w", err)
+	}
+	probe := f.Name()
+	if err := f.Close(); err != nil {
+		// Best effort: the probe exists, so remove it before reporting.
+		_ = os.Remove(probe)
+		return fmt.Errorf("close write probe: %w", err)
 	}
 	if err := os.Remove(probe); err != nil {
 		return fmt.Errorf("remove write probe: %w", err)
@@ -264,4 +278,14 @@ func atomicWriteJSON(path string, v any) error {
 		return fmt.Errorf("rename temp file: %w", err)
 	}
 	return nil
+}
+
+// removeLegacyHealthcheckProbe deletes the .healthcheck file that versions
+// before the issue #8 fix wrote on every /healthz request. Best effort: the
+// file is inert, so a failure to remove it must not stop startup.
+func removeLegacyHealthcheckProbe(dataDir string) {
+	path := filepath.Join(dataDir, podcastsDir, legacyHealthcheckFilename)
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		slog.Warn("could not remove legacy healthcheck probe", "path", path, "error", err)
+	}
 }
