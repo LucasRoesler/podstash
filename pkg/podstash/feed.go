@@ -2,6 +2,7 @@ package podstash
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,9 +22,23 @@ func sanitizeXML(data []byte) []byte {
 	return xmlDeclRe.ReplaceAll(data, []byte(`<?xml version="1.0"`))
 }
 
-// HTTPClient abstracts HTTP fetching for testability.
+// HTTPClient abstracts HTTP fetching for testability. Do is needed alongside
+// Get so feed requests can carry conditional headers; *http.Client satisfies
+// both.
 type HTTPClient interface {
 	Get(url string) (*http.Response, error)
+	Do(req *http.Request) (*http.Response, error)
+}
+
+// ErrFeedNotModified reports that the server answered 304 Not Modified, so the
+// feed is byte-identical to the one behind the validators we sent.
+var ErrFeedNotModified = errors.New("feed not modified")
+
+// FeedValidators are the HTTP cache validators a server gave us for a feed.
+// Sending them back lets the server answer 304 instead of the whole document.
+type FeedValidators struct {
+	ETag         string
+	LastModified string
 }
 
 // RSS XML structures
@@ -129,22 +144,66 @@ func ParseFeed(data []byte) (*RSSFeed, error) {
 
 // FetchFeed downloads and parses an RSS feed from the given URL.
 func FetchFeed(client HTTPClient, url string) (*RSSFeed, error) {
-	resp, err := client.Get(url)
+	feed, _, err := FetchFeedConditional(client, url, FeedValidators{})
+	return feed, err
+}
+
+// FetchFeedConditional downloads and parses a feed, sending any validators the
+// server previously gave us. A server that recognises them answers 304 with an
+// empty body, which skips the download and the XML parse entirely; that is
+// returned as ErrFeedNotModified.
+//
+// The returned validators are the ones to send next time. A 304 response need
+// not repeat them, so the ones passed in are echoed back when it does not.
+func FetchFeedConditional(client HTTPClient, url string, prev FeedValidators) (*RSSFeed, FeedValidators, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("fetch feed: %w", err)
+		return nil, FeedValidators{}, fmt.Errorf("build feed request: %w", err)
+	}
+	if prev.ETag != "" {
+		req.Header.Set("If-None-Match", prev.ETag)
+	}
+	if prev.LastModified != "" {
+		req.Header.Set("If-Modified-Since", prev.LastModified)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, FeedValidators{}, fmt.Errorf("fetch feed: %w", err)
 	}
 	defer resp.Body.Close()
 
+	next := FeedValidators{
+		ETag:         resp.Header.Get("ETag"),
+		LastModified: resp.Header.Get("Last-Modified"),
+	}
+
+	if resp.StatusCode == http.StatusNotModified {
+		// 304 bodies are empty and the response may omit the validators, so
+		// keep the ones that produced the hit.
+		if next.ETag == "" {
+			next.ETag = prev.ETag
+		}
+		if next.LastModified == "" {
+			next.LastModified = prev.LastModified
+		}
+		return nil, next, ErrFeedNotModified
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch feed: status %d", resp.StatusCode)
+		return nil, FeedValidators{}, fmt.Errorf("fetch feed: status %d", resp.StatusCode)
 	}
 
 	const maxFeedSize = 10 << 20 // 10 MB
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxFeedSize))
 	if err != nil {
-		return nil, fmt.Errorf("read feed body: %w", err)
+		return nil, FeedValidators{}, fmt.Errorf("read feed body: %w", err)
 	}
-	return ParseFeed(data)
+	feed, err := ParseFeed(data)
+	if err != nil {
+		return nil, FeedValidators{}, err
+	}
+	return feed, next, nil
 }
 
 // Author returns the best available author string from the feed.
@@ -305,7 +364,20 @@ func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error)
 		return 0, fmt.Errorf("refresh %s: %w", slug, err)
 	}
 
-	feed, err := FetchFeed(client, meta.FeedURL)
+	prev := FeedValidators{ETag: meta.ETag, LastModified: meta.LastModified}
+	feed, validators, err := FetchFeedConditional(client, meta.FeedURL, prev)
+	if errors.Is(err, ErrFeedNotModified) {
+		// The feed is unchanged, so the index cannot have changed either:
+		// skip loading and rewriting it. Meta is still saved so LastCheckedAt
+		// reflects the poll.
+		meta.LastCheckedAt = time.Now().UTC()
+		meta.ETag = validators.ETag
+		meta.LastModified = validators.LastModified
+		if err := SaveMeta(dir, meta); err != nil {
+			return 0, fmt.Errorf("refresh %s: %w", slug, err)
+		}
+		return 0, nil
+	}
 	if err != nil {
 		return 0, fmt.Errorf("refresh %s: %w", slug, err)
 	}
@@ -327,6 +399,8 @@ func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error)
 		meta.ImageURL = img
 	}
 	meta.LastCheckedAt = time.Now().UTC()
+	meta.ETag = validators.ETag
+	meta.LastModified = validators.LastModified
 
 	// Compile skip patterns once for this refresh cycle.
 	skipPatterns := CompileSkipPatterns(meta.SkipPatterns)

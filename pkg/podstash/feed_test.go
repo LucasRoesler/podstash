@@ -1,6 +1,7 @@
 package podstash
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -589,5 +590,205 @@ func TestRefreshPodcastUnchangedFeedLeavesIndexUntouched(t *testing.T) {
 
 	if after := fileIdentity(t, indexPath); after != before {
 		t.Errorf("index rewritten on unchanged refresh: inode %d -> %d", before, after)
+	}
+}
+
+func TestFetchFeedConditionalSendsValidators(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const etag = `"abc123"`
+	const lastMod = "Wed, 21 Oct 2026 07:28:00 GMT"
+
+	var gotINM, gotIMS string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotINM = r.Header.Get("If-None-Match")
+		gotIMS = r.Header.Get("If-Modified-Since")
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Last-Modified", lastMod)
+		if gotINM == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	// First fetch: no validators to send, full body returned.
+	feed, validators, err := FetchFeedConditional(srv.Client(), srv.URL, FeedValidators{})
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if feed == nil {
+		t.Fatal("first fetch returned no feed")
+	}
+	if gotINM != "" || gotIMS != "" {
+		t.Errorf("first fetch sent validators: If-None-Match=%q If-Modified-Since=%q", gotINM, gotIMS)
+	}
+	if validators.ETag != etag {
+		t.Errorf("ETag = %q, want %q", validators.ETag, etag)
+	}
+	if validators.LastModified != lastMod {
+		t.Errorf("Last-Modified = %q, want %q", validators.LastModified, lastMod)
+	}
+
+	// Second fetch: validators echoed back, server answers 304.
+	feed, next, err := FetchFeedConditional(srv.Client(), srv.URL, validators)
+	if !errors.Is(err, ErrFeedNotModified) {
+		t.Fatalf("second fetch err = %v, want ErrFeedNotModified", err)
+	}
+	if feed != nil {
+		t.Error("304 returned a parsed feed, want nil")
+	}
+	if gotINM != etag {
+		t.Errorf("If-None-Match = %q, want %q", gotINM, etag)
+	}
+	if next.ETag != etag {
+		t.Errorf("validators not carried through 304: ETag = %q, want %q", next.ETag, etag)
+	}
+}
+
+// A 304 response need not repeat the validators, so the ones that produced the
+// hit must be carried forward or the next poll would fetch unconditionally.
+func TestFetchFeedConditionalKeepsValidatorsOnBare304(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer srv.Close()
+
+	prev := FeedValidators{ETag: `"kept"`, LastModified: "Wed, 21 Oct 2026 07:28:00 GMT"}
+	_, next, err := FetchFeedConditional(srv.Client(), srv.URL, prev)
+	if !errors.Is(err, ErrFeedNotModified) {
+		t.Fatalf("err = %v, want ErrFeedNotModified", err)
+	}
+	if next.ETag != prev.ETag {
+		t.Errorf("ETag = %q, want %q", next.ETag, prev.ETag)
+	}
+	if next.LastModified != prev.LastModified {
+		t.Errorf("Last-Modified = %q, want %q", next.LastModified, prev.LastModified)
+	}
+}
+
+func TestRefreshPodcastStoresAndReusesValidators(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const etag = `"feed-v1"`
+	var requests, fullBodies int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		fullBodies++
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "conditional-feed"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Conditional", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	added, err := RefreshPodcast(srv.Client(), dataDir, slug)
+	if err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	if added != 2 {
+		t.Fatalf("added = %d, want 2", added)
+	}
+
+	meta, err := LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.ETag != etag {
+		t.Fatalf("stored ETag = %q, want %q", meta.ETag, etag)
+	}
+
+	// Second refresh must reuse the stored ETag and take the 304 path.
+	added, err = RefreshPodcast(srv.Client(), dataDir, slug)
+	if err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+	if added != 0 {
+		t.Errorf("added = %d, want 0", added)
+	}
+	if requests != 2 {
+		t.Errorf("requests = %d, want 2", requests)
+	}
+	if fullBodies != 1 {
+		t.Errorf("full feed bodies sent = %d, want 1 (second poll should be a 304)", fullBodies)
+	}
+
+	// The 304 path must still advance LastCheckedAt and keep the ETag.
+	meta, err = LoadMeta(dir)
+	if err != nil {
+		t.Fatalf("LoadMeta: %v", err)
+	}
+	if meta.ETag != etag {
+		t.Errorf("ETag after 304 = %q, want %q", meta.ETag, etag)
+	}
+	if meta.LastCheckedAt.IsZero() {
+		t.Error("LastCheckedAt not set on 304 path")
+	}
+}
+
+// A 304 must not disturb episodes already recorded in the index.
+func TestRefreshPodcastNotModifiedPreservesIndex(t *testing.T) {
+	data, err := os.ReadFile("testdata/feed_simple.xml")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const etag = `"stable"`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Write(data)
+	}))
+	defer srv.Close()
+
+	dataDir := t.TempDir()
+	slug := "preserve-index"
+	dir := PodcastDir(dataDir, slug)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := SaveMeta(dir, &PodcastMeta{FeedURL: srv.URL, Title: "Preserve", AddedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("SaveMeta: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("first refresh: %v", err)
+	}
+	before, err := LoadIndex(dir)
+	if err != nil {
+		t.Fatalf("LoadIndex: %v", err)
+	}
+
+	if _, err := RefreshPodcast(srv.Client(), dataDir, slug); err != nil {
+		t.Fatalf("second refresh: %v", err)
+	}
+	after, err := LoadIndex(dir)
+	if err != nil {
+		t.Fatalf("LoadIndex: %v", err)
+	}
+	if len(after.Episodes) != len(before.Episodes) {
+		t.Errorf("episodes = %d, want %d unchanged across a 304", len(after.Episodes), len(before.Episodes))
 	}
 }
