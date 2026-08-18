@@ -423,9 +423,7 @@ func RefreshPodcast(client HTTPClient, dataDir string, slug string) (int, error)
 
 func refreshPodcast(client HTTPClient, dataDir string, slug string, force bool) (int, error) {
 	dir := PodcastDir(dataDir, slug)
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {

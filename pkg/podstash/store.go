@@ -82,11 +82,60 @@ type EpisodeIndex struct {
 }
 
 // podcastMutexes provides per-podcast locking to prevent concurrent writes.
-var podcastMutexes sync.Map
+//
+// Entries are reference counted so a slug that is deleted, or simply never
+// touched again, does not occupy the map for the life of the process. Handing
+// out a bare *sync.Mutex would make that unsafe: a caller holding the pointer
+// while the entry was removed would lock an orphan while the next caller
+// created and locked a fresh one, and the two would not exclude each other.
+// Locking and unlocking therefore go through lockPodcast, which is the only
+// thing that adjusts the count.
+var podcastMutexes = struct {
+	mu sync.Mutex
+	m  map[string]*podcastLock
+}{m: make(map[string]*podcastLock)}
 
-func podcastMu(slug string) *sync.Mutex {
-	v, _ := podcastMutexes.LoadOrStore(slug, &sync.Mutex{})
-	return v.(*sync.Mutex)
+type podcastLock struct {
+	mu sync.Mutex
+	// waiters counts holders plus goroutines blocked on mu, guarded by
+	// podcastMutexes.mu. The entry is removed when it reaches zero.
+	waiters int
+}
+
+// lockPodcast locks the podcast's mutex and returns the function that unlocks
+// it. Callers must call the returned function exactly once, normally deferred.
+func lockPodcast(slug string) func() {
+	podcastMutexes.mu.Lock()
+	l, ok := podcastMutexes.m[slug]
+	if !ok {
+		l = &podcastLock{}
+		podcastMutexes.m[slug] = l
+	}
+	l.waiters++
+	podcastMutexes.mu.Unlock()
+
+	l.mu.Lock()
+
+	return func() {
+		l.mu.Unlock()
+
+		podcastMutexes.mu.Lock()
+		defer podcastMutexes.mu.Unlock()
+		l.waiters--
+		// Only drop the entry once nobody holds or awaits it, so no goroutine
+		// can still be using this instance when a later caller makes a new one.
+		if l.waiters == 0 && podcastMutexes.m[slug] == l {
+			delete(podcastMutexes.m, slug)
+		}
+	}
+}
+
+// podcastLockCount reports how many per-podcast locks are currently tracked.
+// Used by tests to assert the map does not grow without bound.
+func podcastLockCount() int {
+	podcastMutexes.mu.Lock()
+	defer podcastMutexes.mu.Unlock()
+	return len(podcastMutexes.m)
 }
 
 // PodcastDir returns the full path to a podcast's directory.

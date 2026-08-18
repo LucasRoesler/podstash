@@ -1010,3 +1010,29 @@ func TestPollOnceDropsHeartbeatEntriesForDeletedPodcasts(t *testing.T) {
 		t.Error("entry for an existing podcast was dropped by a poll")
 	}
 }
+
+// The lock map is keyed by slug like the heartbeat was, so it must not retain
+// an entry for every podcast that has ever been touched.
+func TestPodcastLocksDoNotAccumulate(t *testing.T) {
+	app, dataDir := testApp(t)
+	app.Heartbeat = NewPollHeartbeat()
+
+	for i := range 50 {
+		slug := fmt.Sprintf("ephemeral-%d", i)
+		dir := PodcastDir(dataDir, slug)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := SaveMeta(dir, &PodcastMeta{FeedURL: "https://example.invalid/f.xml", Title: slug}); err != nil {
+			t.Fatalf("SaveMeta: %v", err)
+		}
+
+		req := httptest.NewRequest("POST", "/podcasts/"+slug+"/delete", nil)
+		req.SetPathValue("slug", slug)
+		app.handleDeletePodcast(httptest.NewRecorder(), req)
+	}
+
+	if got := podcastLockCount(); got != 0 {
+		t.Errorf("lock count after 50 add/delete cycles = %d, want 0", got)
+	}
+}

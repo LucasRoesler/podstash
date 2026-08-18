@@ -223,9 +223,7 @@ func (app *App) handleDeletePodcast(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := PodcastDir(app.DataDir, slug)
 
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	if _, err := LoadMeta(dir); err != nil {
 		http.NotFound(w, r)
@@ -251,9 +249,7 @@ func (app *App) handleDeletePodcast(w http.ResponseWriter, r *http.Request) {
 // The request is the check, so it is recorded now rather than when the refresh
 // finishes.
 func (app *App) markRefreshRequested(slug string) bool {
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	if _, err := LoadMeta(PodcastDir(app.DataDir, slug)); err != nil {
 		return false
@@ -298,9 +294,7 @@ func (app *App) handlePausePodcast(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := PodcastDir(app.DataDir, slug)
 
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {
@@ -328,9 +322,7 @@ func (app *App) handleSetDownloadAfter(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := PodcastDir(app.DataDir, slug)
 
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {
@@ -364,9 +356,7 @@ func (app *App) handleAddSkipPattern(w http.ResponseWriter, r *http.Request) {
 	}
 	dir := PodcastDir(app.DataDir, slug)
 
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {
@@ -402,9 +392,7 @@ func (app *App) handleDeleteSkipPattern(w http.ResponseWriter, r *http.Request) 
 	}
 	dir := PodcastDir(app.DataDir, slug)
 
-	mu := podcastMu(slug)
-	mu.Lock()
-	defer mu.Unlock()
+	defer lockPodcast(slug)()
 
 	meta, err := LoadMeta(dir)
 	if err != nil {

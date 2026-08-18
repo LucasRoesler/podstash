@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -585,5 +586,85 @@ func TestSaveAndLoadMetaLastChangedAt(t *testing.T) {
 	}
 	if !meta.LastChangedAt.Equal(want) {
 		t.Errorf("LastChangedAt = %v, want %v", meta.LastChangedAt, want)
+	}
+}
+
+// The lock map must not grow for the life of the process: a podcast that is
+// deleted, or simply never touched again, should leave nothing behind.
+func TestLockPodcastReleasesItsEntry(t *testing.T) {
+	before := podcastLockCount()
+
+	unlock := lockPodcast("transient")
+	if got := podcastLockCount(); got != before+1 {
+		t.Errorf("lock count while held = %d, want %d", got, before+1)
+	}
+	unlock()
+
+	if got := podcastLockCount(); got != before {
+		t.Errorf("lock count after release = %d, want %d", got, before)
+	}
+}
+
+func TestLockPodcastExcludesConcurrentHolders(t *testing.T) {
+	const goroutines = 8
+	const increments = 200
+
+	counter := 0
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Go(func() {
+			for range increments {
+				unlock := lockPodcast("contended")
+				counter++
+				unlock()
+			}
+		})
+	}
+	wg.Wait()
+
+	if want := goroutines * increments; counter != want {
+		t.Errorf("counter = %d, want %d: mutual exclusion was lost", counter, want)
+	}
+	if got := podcastLockCount(); got != 0 {
+		t.Errorf("lock count after contention = %d, want 0", got)
+	}
+}
+
+// The reference count is what makes removal safe. A naive delete would let one
+// goroutine hold an orphaned mutex while the next created a fresh one, so both
+// would proceed at once; this drives that interleaving hard.
+func TestLockPodcastKeepsExclusionAcrossEntryChurn(t *testing.T) {
+	var wg sync.WaitGroup
+	inside := 0
+	var guard sync.Mutex
+	overlaps := 0
+
+	for range 16 {
+		wg.Go(func() {
+			for range 100 {
+				unlock := lockPodcast("churn")
+
+				guard.Lock()
+				inside++
+				if inside > 1 {
+					overlaps++
+				}
+				guard.Unlock()
+
+				guard.Lock()
+				inside--
+				guard.Unlock()
+
+				unlock()
+			}
+		})
+	}
+	wg.Wait()
+
+	if overlaps != 0 {
+		t.Errorf("%d overlapping critical sections: exclusion lost across entry churn", overlaps)
+	}
+	if got := podcastLockCount(); got != 0 {
+		t.Errorf("lock count = %d, want 0 after all holders released", got)
 	}
 }
